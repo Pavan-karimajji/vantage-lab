@@ -1,0 +1,65 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 22,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs2026",
+      "displayName": "VS2026 (common toolchain settings)",
+      "hidden": true,
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "toolset": "v145",
+      "cacheVariables": {
+        "CMAKE_POLICY_DEFAULT_CMP0091": "NEW"
+      }
+    },
+    {
+      "name": "sil-vs2026",
+      "displayName": "SIL vs2026",
+      "inherits": "vs2026",
+      "binaryDir": "${sourceDir}/conan_workarea/build-sil-vs2026",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/conan_workarea/build-sil-vs2026/conan_toolchain.cmake",
+        "TARGET_TYPE": "sil",
+        "BUILD_TESTING": "OFF"
+      }
+    },
+    {
+      "name": "ubuntu_gcc",
+      "displayName": "Ubuntu GCC (common toolchain settings)",
+      "hidden": true,
+      "generator": "Unix Makefiles",
+      "cacheVariables": {
+        "CMAKE_POLICY_DEFAULT_CMP0091": "NEW",
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "sil-ubuntu_gcc",
+      "displayName": "SIL ubuntu_gcc",
+      "inherits": "ubuntu_gcc",
+      "binaryDir": "${sourceDir}/conan_workarea/build-sil-ubuntu_gcc",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/conan_workarea/build-sil-ubuntu_gcc/conan_toolchain.cmake",
+        "TARGET_TYPE": "sil",
+        "BUILD_TESTING": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "sil-vs2026",
+      "configurePreset": "sil-vs2026",
+      "configuration": "Release"
+    },
+    {
+      "name": "sil-ubuntu_gcc",
+      "configurePreset": "sil-ubuntu_gcc",
+      "configuration": "Release"
+    }
+  ]
+}

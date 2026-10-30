@@ -1,0 +1,11 @@
+---
+BasedOnStyle: Google
+ColumnLimit: 100
+IndentWidth: 2
+AccessModifierOffset: -2
+IndentPPDirectives: None
+DerivePointerAlignment: false
+PointerAlignment: Left
+SortIncludes: false
+IncludeBlocks: Preserve
+AllowShortFunctionsOnASingleLine: Empty

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vantage-lab"
+version = "0.1.0"
+description = "Test bench for Vantage: generates lab components from topology files and runs them in a fake car."
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6",
+    "protobuf>=4.25",
+    "mcap>=1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["lab_tools*"]

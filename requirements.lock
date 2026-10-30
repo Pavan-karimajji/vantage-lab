@@ -1,0 +1,12 @@
+# LOCK -- generated, never hand-edited (python_tool_envs_plan.md D2).
+# env:    vantage-lab:lab
+# source: pyproject.toml
+# python: 3.12 (win32)
+# baseline: adas-build-tools/1.0.47 (adas_build_tools-1.0.47-py3-none-any.whl)
+# date:   2026-10-31
+# regenerate: python scripts/lock_python_env.py vantage-lab lab
+lz4==4.4.5
+mcap==1.5.0
+protobuf==7.36.2
+PyYAML==6.0.3
+zstandard==0.25.0

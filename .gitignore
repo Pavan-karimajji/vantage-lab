@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.venv-*/
+.pytest_cache/
+
+# Conan local / generated on every build
+conaninfo.txt
+conanbuildinfo.*
+conan.lock
+CMakeUserPresets.json
+conan_workarea/
