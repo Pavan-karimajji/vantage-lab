@@ -1,0 +1,175 @@
+// Copyright (c) LT EPS. All Rights Reserved.
+// Proprietary and Confidential.
+// COMPONENT: VANTAGE_LAB
+/// @file
+/// @brief
+///   LabComponent: the algorithm of lab component ${component} of topology ${topology}. One run per
+///   control message, plain arithmetic on the samples read. No thread, clock, file or random
+///   value; every member has an initialiser (R-ARCH-2). Filled in by lab_tools.generate.
+/// @author Pavan Karimajji <Pavan.Karimajji@larsentoubro.com>
+
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "adas/cycle_stamp.hpp"
+#include "adas/ref_sync_builder.hpp"
+#include "adas/sig_status.hpp"
+#include "common/comp_state.pb.h"
+#include "common/cycle_control.pb.h"
+#include "common/ref_sync.pb.h"
+#include "common/signal_header.pb.h"
+#include "lab/lab_sample.pb.h"
+#include "lab_params.hpp"
+
+namespace lab {
+
+/// The samples read this run, in declared input order; null for an input not offered.
+struct Inputs {
+  std::array<const adas::lab::LabSample*, kInputCount> sample{};
+};
+
+/// Where the run writes: one sample per data output, the refSync and the compState.
+struct Outputs {
+  std::array<adas::lab::LabSample*, kOutputCount> data{};
+  adas::common::RefSync* refSync = nullptr;
+  adas::df::CompState* compState = nullptr;
+};
+
+class LabComponent {
+ public:
+  using CycleControl = adas::common::CycleControl;
+
+  LabComponent(std::int64_t maxAgeUs, std::uint32_t recoveryRuns, std::string calibrationError)
+      : maxAgeUs_(maxAgeUs), recoveryRuns_(recoveryRuns), calibrationError_(std::move(calibrationError)) {}
+
+  void exec(const CycleControl& control, const Inputs& in, Outputs& out) {
+    cycle_.begin(control);                                  // own count + 1 (IMP-0013)
+    refSync_.begin();                                       // every entry 0
+    for (std::size_t i = 0; i < kInputCount; ++i) {
+      if (in.sample[i] != nullptr) refSync_.recordRead(i, in.sample[i]->sig_header());
+    }
+
+    Verdict v;                                              // sticker, state, reason, value
+    if (control.op_mode() == CycleControl::RESTART) {       // IMP-0023
+      state_ = State{};                                     // a freshly constructed state
+      v = Verdict::init();                                  // stickers INIT, NOT_INITIALIZED
+    } else if (!calibrationError_.empty()) {                // IMP-0026
+      v = Verdict::error(calibrationError_);                // names the key
+    } else if (const char* bad = firstUntrusted(in, control.sig_header().source_timestamp_us())) {
+      state_.failing = true;                                // IMP-0025
+      state_.trustedStreak = 0;
+      v = Verdict::error(std::string("input ") + bad + " not trusted");
+    } else if (state_.failing && ++state_.trustedStreak < recoveryRuns_) {
+      v = Verdict::error("recovering");                     // still ERROR until the declared runs pass
+    } else {
+      state_.failing = false;
+      v = Verdict::running(compute(in));                    // IMP-0027
+    }
+    publish(v, cycle_, refSync_.finish(cycle_), out);       // one place; no path returns early (IMP-0022)
+  }
+
+ private:
+  /// The memory since the last RESTART; State{} is the freshly constructed state.
+  struct State {
+    std::uint64_t acc = 0;
+    bool failing = false;
+    std::uint32_t trustedStreak = 0;
+  };
+
+  struct Verdict {
+    std::uint32_t sticker = adas::common::kSigStatusInit;
+    adas::df::CompState::State state = adas::df::CompState::NOT_INITIALIZED;
+    std::string reason;
+    std::uint64_t value = 0;
+
+    static Verdict init() { return Verdict{}; }
+    static Verdict error(std::string reason) {
+      Verdict v;
+      v.sticker = adas::common::kSigStatusInvalid;
+      v.state = adas::df::CompState::ERROR;
+      v.reason = std::move(reason);
+      return v;
+    }
+    static Verdict running(std::uint64_t value) {
+      Verdict v;
+      v.sticker = adas::common::kSigStatusOk;
+      v.state = adas::df::CompState::RUNNING;
+      v.value = value;
+      return v;
+    }
+  };
+
+  static std::vector<std::string> inputNames() {
+    std::vector<std::string> names;
+    for (const char* name : kInputNames) names.emplace_back(name);
+    return names;
+  }
+
+  /// IMP-0024: the sticker is OK and the age is within the declared limit. The age is signed, so a
+  /// sample newer than the control is fine. An input is judged by its own sticker alone.
+  bool inputTrusted(const adas::common::SignalHeader& header, std::uint64_t controlTimestampUs) const {
+    if (header.sig_status() != adas::common::kSigStatusOk) return false;
+    const std::int64_t ageUs =
+        static_cast<std::int64_t>(controlTimestampUs) - static_cast<std::int64_t>(header.source_timestamp_us());
+    return ageUs <= maxAgeUs_;
+  }
+
+  /// The port name of the first needed input that is not trusted; an input not read is not trusted.
+  const char* firstUntrusted(const Inputs& in, std::uint64_t controlTimestampUs) const {
+    for (std::size_t i = 0; i < kInputCount; ++i) {
+      if (in.sample[i] == nullptr || !inputTrusted(in.sample[i]->sig_header(), controlTimestampUs)) {
+        return kInputNames[i];
+      }
+    }
+    return nullptr;
+  }
+
+  /// IMP-0027: sum_i 1000003^i * v_i in uint64 (wraps); with memory, the running sum since RESTART.
+  std::uint64_t compute(const Inputs& in) {
+    std::uint64_t sum = 0;
+    std::uint64_t weight = 1;
+    for (std::size_t i = 0; i < kInputCount; ++i) {
+      sum += weight * in.sample[i]->value();
+      weight *= kWeight;
+    }
+    if (kMemory) {
+      state_.acc += sum;
+      return state_.acc;
+    }
+    return sum;
+  }
+
+  /// The only exit of exec: every data output, the refSync and the compState (IMP-0022).
+  static void publish(const Verdict& v, const adas::common::CycleStamp& cycle, const adas::common::RefSync& refSync,
+                      Outputs& out) {
+    for (std::size_t k = 0; k < kOutputCount; ++k) {
+      adas::lab::LabSample* sample = out.data[k];
+      sample->Clear();
+      cycle.stamp(v.sticker, sample->mutable_sig_header());
+      if (v.sticker == adas::common::kSigStatusOk) sample->set_value(v.value + static_cast<std::uint64_t>(k));
+    }
+    out.refSync->CopyFrom(refSync);
+    out.compState->Clear();
+    out.compState->set_function(kComponentName);
+    out.compState->set_state(v.state);
+    out.compState->set_reason(v.reason);
+    cycle.stampCompState(out.compState);
+  }
+
+  static constexpr std::uint64_t kWeight = 1000003ULL;
+
+  std::int64_t maxAgeUs_ = 0;
+  std::uint32_t recoveryRuns_ = 0;
+  std::string calibrationError_;
+  adas::common::CycleStamp cycle_;
+  adas::common::RefSyncBuilder refSync_{inputNames()};
+  State state_;
+};
+
+}  // namespace lab

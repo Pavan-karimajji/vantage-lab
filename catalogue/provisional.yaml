@@ -1,0 +1,25 @@
+# Provisional lab values (VANTAGE_Lab_Design.md section 7). None is a customer figure:
+# a lab choice so the lab's own tests can run (R-REQ-10). Replace a value here, never with
+# a default in code. The generator reads `calibration:` and refuses a component without
+# its two keys.
+#
+# LAB_<C>_MAX_AGE_US  = 1000 * 2 * (largest period + jitter among the component's producers
+#                       + the component's own jitter), in ms: B = 2 * (50 + 5 + 4) = 118 ms.
+# LAB_<C>_RECOVERY_RUNS = 2, the smallest value for which the "recovering" branch runs.
+calibration:
+  running_example:
+    A:
+      LAB_A_MAX_AGE_US: {value: 24000, status: provisional}      # X 10 + own jitter 2, twice
+      LAB_A_RECOVERY_RUNS: {value: 2, status: provisional}
+    B:
+      LAB_B_MAX_AGE_US: {value: 118000, status: provisional}     # Z 50 + 5 + own jitter 4, twice
+      LAB_B_RECOVERY_RUNS: {value: 2, status: provisional}
+    C:
+      LAB_C_MAX_AGE_US: {value: 20000, status: provisional}      # X 10 + own jitter 0, twice
+      LAB_C_RECOVERY_RUNS: {value: 2, status: provisional}
+    D:
+      LAB_D_MAX_AGE_US: {value: 44000, status: provisional}      # C 20 + own jitter 2, twice
+      LAB_D_RECOVERY_RUNS: {value: 2, status: provisional}
+    E:
+      LAB_E_MAX_AGE_US: {value: 62000, status: provisional}      # Y 25 + 3 + own jitter 3, twice
+      LAB_E_RECOVERY_RUNS: {value: 2, status: provisional}

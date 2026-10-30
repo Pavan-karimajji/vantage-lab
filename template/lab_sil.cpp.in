@@ -1,0 +1,271 @@
+// Copyright (c) LT EPS. All Rights Reserved.
+// Proprietary and Confidential.
+// COMPONENT: VANTAGE_LAB
+/// @file
+/// @brief
+///   Composition root of lab component ${component} of topology ${topology} on the generic SIL ABI:
+///   adasAbiVersion, adasManifest, adasInit, adasExec, adasShutdown, the calibration load and the
+///   hang and crash switches of the failure drills. The port table, the manifest builder and the
+///   dispatch bindings come from the generated header (R-SIM-22). Filled in by lab_tools.generate.
+/// @author Pavan Karimajji <Pavan.Karimajji@larsentoubro.com>
+
+#include <cerrno>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <numeric>
+#include <set>
+#include <sstream>
+#include <string>
+#include <utility>
+
+#include <google/protobuf/descriptor.h>
+#include <google/protobuf/descriptor.pb.h>
+
+#include "Adas__Sil/component_manifest.pb.h"
+#include "adas/adas_sil_abi.h"
+#include "lab_component.hpp"
+#include "src/component/${component}_ports.hpp"
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#define NOGDI
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
+namespace {
+
+using adas::sil::ComponentManifest;
+using lab::LabComponent;
+
+// ---- the helpers the generated header expects its includer to provide -------------------------
+
+const AdasPort* findPort(const AdasPortSet* set, const char* name) {
+  if (set == nullptr || set->ports == nullptr) return nullptr;
+  for (size_t i = 0; i < set->count; ++i) {
+    if (set->ports[i].name != nullptr && std::strcmp(set->ports[i].name, name) == 0) return &set->ports[i];
+  }
+  return nullptr;
+}
+
+AdasPort* findPort(AdasPortSet* set, const char* name) {
+  return const_cast<AdasPort*>(findPort(static_cast<const AdasPortSet*>(set), name));
+}
+
+/// Takes one input off the port set. An absent or valid=0 input is not offered; bytes that do not
+/// parse mark the port malformed, which makes adasExec refuse the run.
+template <typename Msg>
+void updateReqPort(lab::ReqPort<Msg>& port, const AdasPort* in) {
+  port.valid = false;
+  port.malformed = false;
+  port.ageS = 0.0;
+  if (in == nullptr || in->valid == 0 || in->data == nullptr) return;
+  if (!port.data.ParseFromArray(in->data, static_cast<int>(in->len))) {
+    port.data.Clear();
+    port.malformed = true;
+    return;
+  }
+  port.valid = true;
+  port.ageS = in->ageS;
+}
+
+/// Writes one output into the host's buffer; false when it does not fit.
+template <typename Msg>
+bool writeAdasProBuf(const Msg& data, bool updated, AdasPort* out) {
+  if (out == nullptr) return true;
+  out->updated = updated ? 1 : 0;
+  if (!updated) return true;
+  const size_t size = data.ByteSizeLong();
+  if (out->data == nullptr || size > out->cap) return false;
+  if (size > 0 && !data.SerializeToArray(out->data, static_cast<int>(size))) return false;
+  out->len = size;
+  return true;
+}
+
+void addFileAndDeps(const google::protobuf::FileDescriptor* file, std::set<std::string>& seen,
+                    google::protobuf::FileDescriptorSet& set) {
+  if (!seen.insert(file->name()).second) return;
+  for (int i = 0; i < file->dependency_count(); ++i) addFileAndDeps(file->dependency(i), seen, set);
+  file->CopyTo(set.add_file());
+}
+
+}  // namespace
+
+namespace {
+#include "${library}_ports.gen.h"
+}  // namespace
+
+namespace {
+
+// ---- where the library sits, and its bundle ----------------------------------------------------
+
+std::string libraryDir() {
+  std::string path;
+#if defined(_WIN32)
+  HMODULE module = nullptr;
+  if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCSTR>(&libraryDir), &module)) {
+    char buffer[4096] = {};
+    const DWORD n = GetModuleFileNameA(module, buffer, sizeof(buffer));
+    if (n > 0 && n < sizeof(buffer)) path.assign(buffer, n);
+  }
+#else
+  Dl_info info;
+  if (dladdr(reinterpret_cast<void*>(&libraryDir), &info) != 0 && info.dli_fname != nullptr) path = info.dli_fname;
+#endif
+  const size_t cut = path.find_last_of("/\\");
+  return cut == std::string::npos ? std::string() : path.substr(0, cut);
+}
+
+// ---- IMP-0026: the calibration of the bundle ---------------------------------------------------
+
+struct Calibration {
+  std::int64_t maxAgeUs = 0;
+  std::uint32_t recoveryRuns = 0;
+  std::uint32_t hangAfterRuns = 0;
+  std::uint32_t crashAfterRuns = 0;
+  std::string error;  // "calibration key <KEY> missing" once a key is missing or not an integer
+};
+
+std::string trim(const std::string& s) {
+  const size_t first = s.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return std::string();
+  return s.substr(first, s.find_last_not_of(" \t\r\n") - first + 1);
+}
+
+/// Reads <bundleDir>/default.yaml, a flat `KEY: integer` file. False when the file cannot be read;
+/// a key that is absent or not a non-negative integer sets calibration.error and keeps the first.
+bool loadCalibration(const std::string& bundleDir, Calibration& calibration) {
+  std::ifstream file(bundleDir + "/default.yaml");
+  if (!file) return false;
+  std::map<std::string, std::string> keys;
+  std::string line;
+  while (std::getline(file, line)) {
+    const size_t hash = line.find('#');
+    if (hash != std::string::npos) line.erase(hash);
+    const size_t colon = line.find(':');
+    if (colon == std::string::npos) continue;
+    keys[trim(line.substr(0, colon))] = trim(line.substr(colon + 1));
+  }
+
+  auto read = [&](const char* key, std::uint64_t& value) {
+    const auto it = keys.find(key);
+    bool ok = it != keys.end() && !it->second.empty() && it->second.find_first_not_of("0123456789") == std::string::npos;
+    if (ok) {
+      errno = 0;
+      value = std::strtoull(it->second.c_str(), nullptr, 10);
+      ok = errno == 0;
+    }
+    if (!ok && calibration.error.empty()) calibration.error = std::string("calibration key ") + key + " missing";
+    return ok;
+  };
+
+  std::uint64_t maxAge = 0, recovery = 0, hang = 0, crash = 0;
+  if (read(lab::kMaxAgeKey, maxAge)) calibration.maxAgeUs = static_cast<std::int64_t>(maxAge);
+  if (read(lab::kRecoveryKey, recovery)) calibration.recoveryRuns = static_cast<std::uint32_t>(recovery);
+  if (read(lab::kHangKey, hang)) calibration.hangAfterRuns = static_cast<std::uint32_t>(hang);
+  if (read(lab::kCrashKey, crash)) calibration.crashAfterRuns = static_cast<std::uint32_t>(crash);
+  return true;
+}
+
+struct Handle {
+  explicit Handle(Calibration c)
+      : calibration(std::move(c)), component(calibration.maxAgeUs, calibration.recoveryRuns, calibration.error) {}
+
+  Calibration calibration;
+  LabComponent component;
+  lab::LabReqPorts reqPorts;
+  lab::LabProPorts proPorts;
+  std::uint64_t runCount = 0;
+};
+
+/// The failure drills (design section 4.1): hang or crash once the run count has passed the
+/// calibrated number; 0 means never. Before the algorithm runs, so the algorithm file stays clean.
+void applyFailureSwitches(const Handle& handle) {
+  if (handle.calibration.hangAfterRuns > 0 && handle.runCount > handle.calibration.hangAfterRuns) {
+    volatile bool spin = true;
+    while (spin) {
+    }
+  }
+  if (handle.calibration.crashAfterRuns > 0 && handle.runCount > handle.calibration.crashAfterRuns) {
+    volatile int* nothing = nullptr;
+    *nothing = 1;
+  }
+}
+
+std::string readBundleSha() {
+  std::ifstream file(libraryDir() + "/config/bundle.sha256");
+  std::string sha;
+  if (file) std::getline(file, sha);
+  return trim(sha);
+}
+
+}  // namespace
+
+extern "C" {
+
+ADAS_SIL_API int32_t adasAbiVersion(void) { return ADAS_SIL_ABI_VERSION; }
+
+ADAS_SIL_API size_t adasManifest(uint8_t* data, size_t cap) {
+  try {
+    ComponentManifest manifest = buildManifest([](const char*, const char*, uint64_t fallbackUs) { return fallbackUs; });
+    manifest.set_config_bundle_sha256(readBundleSha());
+    const size_t size = manifest.ByteSizeLong();
+    if (data == nullptr || cap < size) return size;
+    if (!manifest.SerializeToArray(data, static_cast<int>(size))) return 0;
+    return size;
+  } catch (...) {
+    return 0;
+  }
+}
+
+ADAS_SIL_API void* adasInit(const char* configPath) {
+  try {
+    std::string bundleDir;
+    if (configPath != nullptr) {
+      bundleDir = configPath;
+    } else {
+      const std::string dir = libraryDir();
+      if (dir.empty()) return nullptr;
+      bundleDir = dir + "/config";
+    }
+    Calibration calibration;
+    if (!loadCalibration(bundleDir, calibration)) return nullptr;  // never a silent default
+    return new Handle(std::move(calibration));
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+ADAS_SIL_API int32_t adasExec(void* handle, double /*dtS*/, const AdasPortSet* in, AdasPortSet* out) {
+  if (handle == nullptr || in == nullptr || out == nullptr) return 0;
+  try {
+    Handle& h = *static_cast<Handle*>(handle);
+    bindGeneratedInputs(h, in);
+    if (h.reqPorts.anyMalformed() || !h.reqPorts.control.valid) return 0;
+    ++h.runCount;
+    applyFailureSwitches(h);
+
+    lab::Inputs inputs;
+    inputs.sample = h.reqPorts.samples();
+    lab::Outputs outputs;
+    outputs.data = h.proPorts.dataOutputs();
+    outputs.refSync = &h.proPorts.refSync.data;
+    outputs.compState = &h.proPorts.compState.data;
+    h.component.exec(h.reqPorts.control.data, inputs, outputs);
+    h.proPorts.markUpdated();
+    return bindGeneratedOutputs(h, out) ? 1 : 0;
+  } catch (...) {
+    return 0;
+  }
+}
+
+ADAS_SIL_API void adasShutdown(void* handle) { delete static_cast<Handle*>(handle); }
+
+}  // extern "C"

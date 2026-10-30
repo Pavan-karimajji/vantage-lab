@@ -1,0 +1,24 @@
+topology: running_example
+seed: 1
+duration_ms: 3000
+sources:
+  - {name: X, period_ms: 10}
+  - {name: Y, period_ms: 25, jitter_ms: 3}
+  - {name: Z, period_ms: 50, jitter_ms: 5}
+components:
+  - {name: A, period_ms: 20, jitter_ms: 2, inputs: [{producer: X}]}
+  - name: B
+    period_ms: 40
+    phase_ms: 60
+    jitter_ms: 4
+    memory: true
+    inputs: [{producer: A}, {producer: X}, {producer: Y}, {producer: Z}]
+  - {name: C, period_ms: 20, inputs: [{producer: X}]}
+  - {name: D, period_ms: 20, jitter_ms: 2, memory: true, inputs: [{producer: C}]}
+  - {name: E, period_ms: 30, jitter_ms: 3, inputs: [{producer: Y}]}
+scenarios:
+  - name: base
+    resim:
+      - {name: cut_c, measured: [C]}          # A, B, D, E simulated; C measured
+      - {name: all_simulated}
+      - {name: jump, measured: [C], jump_to_ms: 1500}
