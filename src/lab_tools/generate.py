@@ -8,8 +8,8 @@
 
 ``python -m lab_tools.generate --topology catalogue/<name>.yaml --out <dir>`` writes, per
 component, under ``<dir>/<topology>/<component>/``: ``src/component/<component>_ports.hpp``,
-``ports.yaml``, ``lab_params.hpp``, ``lab_component.hpp``, ``lab_sil.cpp``, ``default.yaml`` and
-``ego_params.yaml``. It writes no value of its own into C++ except names and the memory flag; every
+``ports.yaml``, ``lab_params.hpp``, ``lab_component.hpp``, ``lab_sil.cpp`` and ``default.yaml``.
+It writes no value of its own into C++ except names and the memory flag; every
 threshold is a calibration key of ``default.yaml``. Standard library and PyYAML only.
 """
 from __future__ import annotations
@@ -249,12 +249,6 @@ constexpr const char* kCrashKey = "{crash_key}";
     _write(path, text)
 
 
-def _write_ego_params(path: Path) -> None:
-    # The standard bundle step (adas_pack_config_bundle) packs a vehicle/ego_params.yaml. A lab
-    # component has no vehicle, so the file is an empty mapping and carries no value.
-    _write(path, "# Lab components have no vehicle: empty by design; the standard bundle step requires the file.\n{}\n")
-
-
 def _fill(template: str, **values: str) -> str:
     return string.Template(template).substitute(values)
 
@@ -281,7 +275,6 @@ def generate_component(topology: Topology, comp: ComponentDesc, out_dir: Path, p
            _fill((template_dir / "lab_component.hpp.in").read_text(encoding="utf-8"), **values))
     _write(comp_dir / "lab_sil.cpp", _fill((template_dir / "lab_sil.cpp.in").read_text(encoding="utf-8"), **values))
     write_default_yaml(comp_dir / "default.yaml", topology.name, comp, provisional)
-    _write_ego_params(comp_dir / "ego_params.yaml")
 
     digest = hashlib.sha256()
     for rel in _SOURCE_FILES:

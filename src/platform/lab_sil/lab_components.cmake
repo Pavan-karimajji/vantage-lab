@@ -7,6 +7,9 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 # The standard functions of `interfaces` (found through CMAKE_MODULE_PATH by find_package(AdasInterfaces)).
 include(sil_ports_generate)
 include(config_bundle_pack)
+# The real ego parameters of the base project, from the adas-shared-config package (R-SIM-3a).
+find_package(AdasSharedConfig REQUIRED)
+set(LAB_EGO_PARAMS_YAML "${adas-shared-config_RES_DIRS_RELEASE}/base/vehicle/ego_params.yaml")
 
 function(lab_add_topology TOPOLOGY_FILE)
     get_filename_component(_topology "${TOPOLOGY_FILE}" NAME_WE)
@@ -84,7 +87,7 @@ function(lab_add_topology TOPOLOGY_FILE)
             OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/lab_ports/${_topology}/${_comp}")
         adas_pack_config_bundle(${_lib}
             DEFAULT_YAML "${_comp_gen}/default.yaml"
-            EGO_PARAMS_YAML "${_comp_gen}/ego_params.yaml"
+            EGO_PARAMS_YAML "${LAB_EGO_PARAMS_YAML}"
             PORTS_YAML "${_comp_gen}/ports.yaml")
     endforeach()
 endfunction()

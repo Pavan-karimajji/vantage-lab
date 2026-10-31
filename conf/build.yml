@@ -11,6 +11,7 @@ variants:
   base:
     requires:
       - adas-interfaces/1.1.0
+      - adas-shared-config/1.0.0
       - protobuf/3.21.12
     sil:
       platforms:
