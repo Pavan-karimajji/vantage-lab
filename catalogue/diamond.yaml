@@ -1,0 +1,15 @@
+topology: diamond
+seed: 1
+duration_ms: 2000
+sources:
+  - {name: X, period_ms: 10}
+components:
+  - {name: A, period_ms: 20, inputs: [{producer: X}]}
+  - {name: B, period_ms: 20, inputs: [{producer: A}]}
+  - {name: C, period_ms: 20, inputs: [{producer: A}]}
+  - {name: D, period_ms: 20, inputs: [{producer: B}, {producer: C}]}
+scenarios:
+  - name: base
+    resim:
+      - {name: cut_b, measured: [B]}          # A, C, D simulated; D joins the recorded B and the live C
+      - {name: all_simulated}

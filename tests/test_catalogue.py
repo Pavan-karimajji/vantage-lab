@@ -36,7 +36,7 @@ from lab_tools.messages import MessageFactory  # noqa: E402
 from lab_tools.reference import Recording, ReferenceResim, ReferenceResimError  # noqa: E402
 from lab_tools.setup_writer import (ProvisionalError, RunSetupError, load_provisional, provisional_values,  # noqa: E402
                                     write_run_setup)
-from lab_tools.topology import IMAGE_KIND, load_topology  # noqa: E402
+from lab_tools.topology import IMAGE_KIND, TopologyError, load_topology  # noqa: E402
 
 CATALOGUE = LAB_ROOT / "catalogue"
 PROVISIONAL = CATALOGUE / "provisional.yaml"
@@ -67,6 +67,8 @@ def catalogue_cases():
     cases = []
     for file in catalogue_files():
         topology = load_topology(file)
+        if topology.refused_at_load:
+            continue  # no recording to re-run; test_lab48_... asserts the loader's refusal instead
         for scenario in topology.scenarios:
             for case in scenario.resim:
                 cases.append(pytest.param(file.stem, scenario.name, case["name"],
@@ -116,6 +118,26 @@ def provisional_run_setup():
 
 def case_of(scenario, name):
     return next(c for c in scenario.resim if c["name"] == name)
+
+
+# ---- LAB-48: a file that expects refusal at load ----------------------------------------------------------------------
+def refused_files():
+    return [pytest.param(f, id=f.stem) for f in catalogue_files() if load_topology(f).refused_at_load]
+
+
+@pytest.mark.parametrize("file", refused_files())
+def test_lab48_a_file_expecting_refusal_is_skipped_by_the_re_run_and_refused_without_the_word(file, tmp_path, capsys):
+    """The loader accepts the file only with ``expect: refused_at_load``; without that word it raises, naming the loop."""
+    with capsys.disabled():
+        print(f"\nSYT-RSY-04 {file.stem}: skipped, it expects refusal at load; there is no recording to re-run")
+    topology = load_topology(file)
+    assert all(s.expect == "refused_at_load" for s in topology.scenarios) and not any(s.resim for s in topology.scenarios)
+    text = file.read_text(encoding="utf-8")
+    assert "expect: refused_at_load" in text
+    plain = tmp_path / file.name
+    plain.write_text(text.replace("expect: refused_at_load", "expect: exact"), encoding="utf-8")
+    with pytest.raises(TopologyError, match="loop through inputs not marked previous_cycle"):
+        load_topology(plain)
 
 
 # ---- SYT-RSY-04 ------------------------------------------------------------------------------------------------------

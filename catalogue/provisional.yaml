@@ -24,6 +24,74 @@ calibration:
     E:
       LAB_E_MAX_AGE_US: {value: 62000, status: provisional}      # Y 25 + 3 + own jitter 3, twice
       LAB_E_RECOVERY_RUNS: {value: 2, status: provisional}
+  fan_out:
+    A:
+      LAB_A_MAX_AGE_US: {value: 20000, status: provisional}      # X 10 + own jitter 0, twice
+      LAB_A_RECOVERY_RUNS: {value: 2, status: provisional}
+    B:
+      LAB_B_MAX_AGE_US: {value: 40000, status: provisional}      # A 20 + own jitter 0, twice
+      LAB_B_RECOVERY_RUNS: {value: 2, status: provisional}
+    C:
+      LAB_C_MAX_AGE_US: {value: 40000, status: provisional}      # A 20 + own jitter 0, twice
+      LAB_C_RECOVERY_RUNS: {value: 2, status: provisional}
+  diamond:
+    A:
+      LAB_A_MAX_AGE_US: {value: 20000, status: provisional}      # X 10 + own jitter 0, twice
+      LAB_A_RECOVERY_RUNS: {value: 2, status: provisional}
+    B:
+      LAB_B_MAX_AGE_US: {value: 40000, status: provisional}      # A 20 + own jitter 0, twice
+      LAB_B_RECOVERY_RUNS: {value: 2, status: provisional}
+    C:
+      LAB_C_MAX_AGE_US: {value: 40000, status: provisional}      # A 20 + own jitter 0, twice
+      LAB_C_RECOVERY_RUNS: {value: 2, status: provisional}
+    D:
+      LAB_D_MAX_AGE_US: {value: 40000, status: provisional}      # B 20 + own jitter 0, twice
+      LAB_D_RECOVERY_RUNS: {value: 2, status: provisional}
+  rates_not_multiple:
+    A:
+      LAB_A_MAX_AGE_US: {value: 20000, status: provisional}      # X 10 + own jitter 0, twice
+      LAB_A_RECOVERY_RUNS: {value: 2, status: provisional}
+    B:
+      LAB_B_MAX_AGE_US: {value: 40000, status: provisional}      # A 20 + own jitter 0, twice
+      LAB_B_RECOVERY_RUNS: {value: 2, status: provisional}
+    C:
+      LAB_C_MAX_AGE_US: {value: 60000, status: provisional}      # B 30 + own jitter 0, twice
+      LAB_C_RECOVERY_RUNS: {value: 2, status: provisional}
+  feedback:
+    A:
+      LAB_A_MAX_AGE_US: {value: 40000, status: provisional}      # B 20 + own jitter 0, twice
+      LAB_A_RECOVERY_RUNS: {value: 2, status: provisional}
+    B:
+      LAB_B_MAX_AGE_US: {value: 40000, status: provisional}      # A 20 + own jitter 0, twice
+      LAB_B_RECOVERY_RUNS: {value: 2, status: provisional}
+  measured_middle:
+    A:
+      LAB_A_MAX_AGE_US: {value: 20000, status: provisional}      # X 10 + own jitter 0, twice
+      LAB_A_RECOVERY_RUNS: {value: 2, status: provisional}
+    M:
+      LAB_M_MAX_AGE_US: {value: 40000, status: provisional}      # A 20 + own jitter 0, twice
+      LAB_M_RECOVERY_RUNS: {value: 2, status: provisional}
+    B:
+      LAB_B_MAX_AGE_US: {value: 40000, status: provisional}      # M 20 + own jitter 0, twice
+      LAB_B_RECOVERY_RUNS: {value: 2, status: provisional}
+  late_consumer:
+    P:
+      LAB_P_MAX_AGE_US: {value: 20000, status: provisional}      # X 10 + own jitter 0, twice
+      LAB_P_RECOVERY_RUNS: {value: 2, status: provisional}
+    Q:
+      LAB_Q_MAX_AGE_US: {value: 56000, status: provisional}      # P 20 + own jitter 8, twice
+      LAB_Q_RECOVERY_RUNS: {value: 2, status: provisional}
+  data_triggered:
+    T:
+      LAB_T_MAX_AGE_US: {value: 60000, status: provisional}      # X 30 + own jitter 0, twice
+      LAB_T_RECOVERY_RUNS: {value: 2, status: provisional}
+  loop_no_edge:
+    A:
+      LAB_A_MAX_AGE_US: {value: 40000, status: provisional}      # B 20 + own jitter 0, twice
+      LAB_A_RECOVERY_RUNS: {value: 2, status: provisional}
+    B:
+      LAB_B_MAX_AGE_US: {value: 40000, status: provisional}      # A 20 + own jitter 0, twice
+      LAB_B_RECOVERY_RUNS: {value: 2, status: provisional}
 
 # The run-setup values of section 7, one entry per key of ARCH section 2.3 that has a value to give.
 # Each carries `status: provisional`, and a written run setup lists every one of them in its
