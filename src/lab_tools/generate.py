@@ -61,6 +61,11 @@ def switch_keys(component: str) -> tuple[str, str]:
     return calibration_key(component, "HANG_AFTER_RUNS"), calibration_key(component, "CRASH_AFTER_RUNS")
 
 
+def start_count_key(component: str) -> str:
+    """The own run count before the first run (``CycleStamp(startCount)``); 0 unless a bundle variant sets it."""
+    return calibration_key(component, "START_COUNT")
+
+
 def input_port_names(comp: ComponentDesc) -> list[str]:
     """Manifest data inputs, in declared order (the only order, RCT:IMP-0028)."""
     return [i.name for i in comp.inputs]
@@ -98,7 +103,7 @@ def _provisional_value(provisional: Mapping[str, Any], topology: str, comp: str,
 
 
 def write_default_yaml(path: Path, topology: str, comp: ComponentDesc, provisional: Mapping[str, Any]) -> None:
-    """The component's calibration: the two provisional keys and the two ``..._AFTER_RUNS`` at 0."""
+    """The component's calibration: the two provisional keys, the two ``..._AFTER_RUNS`` and ``..._START_COUNT`` at 0."""
     max_age_key, recovery_key = provisional_keys(comp.name)
     hang_key, crash_key = switch_keys(comp.name)
     lines = [
@@ -107,6 +112,7 @@ def write_default_yaml(path: Path, topology: str, comp: ComponentDesc, provision
         f"{recovery_key}: {_provisional_value(provisional, topology, comp.name, recovery_key)}",
         f"{hang_key}: 0",
         f"{crash_key}: 0",
+        f"{start_count_key(comp.name)}: 0",
     ]
     _write(path, "\n".join(lines) + "\n")
 
@@ -243,6 +249,7 @@ constexpr const char* kMaxAgeKey = "{max_age_key}";
 constexpr const char* kRecoveryKey = "{recovery_key}";
 constexpr const char* kHangKey = "{hang_key}";
 constexpr const char* kCrashKey = "{crash_key}";
+constexpr const char* kStartCountKey = "{start_count_key(comp.name)}";
 
 }}  // namespace lab
 """

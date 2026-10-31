@@ -17,6 +17,7 @@ import pytest
 
 from lab_harness import (SIG_INVALID, SIG_OK, Control, LabHarness, Sample, Step, find_index)
 from lab_tools.abi import load_index
+from lab_tools.bundles import bundle_variant
 
 B_INPUTS = ["in_A", "in_X", "in_Y", "in_Z"]
 MAX_AGE_B_US = 118000
@@ -90,12 +91,18 @@ def test_SYT_HDR_03_c1_planted_violation_a_copied_or_repeated_count_is_rejected(
         assert_steps_of_one([1, 7, 7, 900, 3])  # the control's counters copied
 
 
-def test_SYT_HDR_03_c2_count_wraps_to_zero_after_0xFFFFFFFF(harness_b):
-    """Serves SYS-0003 (Accept: differs by exactly 1 modulo 2^32); the count is seeded in the instance (ABI has no start value)."""
-    harness_b.seed_cycle_count(0xFFFFFFFF)
-    after = [harness_b.run(good_step(i, B_INPUTS)) for i in range(3)]
+def test_SYT_HDR_03_c2_count_wraps_to_zero_after_0xFFFFFFFF(index_path, tmp_path):
+    """Serves SYS-0003 (Accept: differs by exactly 1 modulo 2^32); B starts at 0xFFFFFFFF through its LAB_B_START_COUNT key, in a bundle variant."""
+    key = "LAB_B_START_COUNT"
+    source = Path(load_index(index_path)["components"]["B"]["config"])
+    assert f"{key}: 0" in (source / "default.yaml").read_text(encoding="utf-8").splitlines(), "the built bundle starts at 0"
+    bundle_variant(source, tmp_path / "start_max", set_values={key: 0xFFFFFFFF})
+    with LabHarness(index_path, "B", bundle=tmp_path / "start_max") as harness:
+        after = [harness.run(good_step(i, B_INPUTS)) for i in range(3)]
+    assert all(r.ok for r in after)
     assert [r.outputs["out"].sig_header.cycle_counter for r in after] == [0, 1, 2]
     assert [r.outputs["refSync"].sig_header.cycle_counter for r in after] == [0, 1, 2]
+    assert [r.outputs["compState"].sig_header.cycle_counter for r in after] == [0, 1, 2]
 
 
 # ---- SYT-CTL-01 ----------------------------------------------------------------------------------

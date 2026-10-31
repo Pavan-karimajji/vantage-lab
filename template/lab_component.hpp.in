@@ -45,8 +45,13 @@ class LabComponent {
  public:
   using CycleControl = adas::common::CycleControl;
 
-  LabComponent(std::int64_t maxAgeUs, std::uint32_t recoveryRuns, std::string calibrationError)
-      : maxAgeUs_(maxAgeUs), recoveryRuns_(recoveryRuns), calibrationError_(std::move(calibrationError)) {}
+  /// `startCount` is the own run count before the first run (calibration key `kStartCountKey`).
+  LabComponent(std::int64_t maxAgeUs, std::uint32_t recoveryRuns, std::string calibrationError,
+               std::uint32_t startCount = 0)
+      : maxAgeUs_(maxAgeUs),
+        recoveryRuns_(recoveryRuns),
+        calibrationError_(std::move(calibrationError)),
+        cycle_(startCount) {}
 
   void exec(const CycleControl& control, const Inputs& in, Outputs& out) {
     cycle_.begin(control);                                  // own count + 1 (IMP-0013)

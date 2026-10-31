@@ -75,12 +75,12 @@ def test_lab15_generates_the_files_of_every_component(topology, provisional, tmp
         assert f"lab_running_example_{name}" in (comp_dir / "lab_sil.cpp").read_text(encoding="utf-8")
 
 
-def test_lab16_default_yaml_has_the_provisional_keys_and_the_two_after_runs_at_zero(topology, provisional, tmp_path):
+def test_lab16_default_yaml_has_the_provisional_keys_and_the_after_runs_and_start_count_at_zero(topology, provisional, tmp_path):
     generate(topology, provisional, tmp_path / "gen", tmp_path / "lab")
     text = (tmp_path / "gen" / "running_example" / "B" / "default.yaml").read_text(encoding="utf-8")
     keys = yaml.safe_load(text)
     assert keys == {"LAB_B_MAX_AGE_US": 118000, "LAB_B_RECOVERY_RUNS": 2,
-                    "LAB_B_HANG_AFTER_RUNS": 0, "LAB_B_CRASH_AFTER_RUNS": 0}
+                    "LAB_B_HANG_AFTER_RUNS": 0, "LAB_B_CRASH_AFTER_RUNS": 0, "LAB_B_START_COUNT": 0}
 
 
 @pytest.mark.parametrize("missing", ["LAB_B_MAX_AGE_US", "LAB_B_RECOVERY_RUNS"])

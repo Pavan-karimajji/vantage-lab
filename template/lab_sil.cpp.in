@@ -130,6 +130,7 @@ struct Calibration {
   std::uint32_t recoveryRuns = 0;
   std::uint32_t hangAfterRuns = 0;
   std::uint32_t crashAfterRuns = 0;
+  std::uint32_t startCount = 0;  // the own run count before the first run; absent means 0
   std::string error;  // "calibration key <KEY> missing" once a key is missing or not an integer
 };
 
@@ -171,12 +172,21 @@ bool loadCalibration(const std::string& bundleDir, Calibration& calibration) {
   if (read(lab::kRecoveryKey, recovery)) calibration.recoveryRuns = static_cast<std::uint32_t>(recovery);
   if (read(lab::kHangKey, hang)) calibration.hangAfterRuns = static_cast<std::uint32_t>(hang);
   if (read(lab::kCrashKey, crash)) calibration.crashAfterRuns = static_cast<std::uint32_t>(crash);
+  const auto start = keys.find(lab::kStartCountKey);  // optional: absent is 0, present must be a uint32
+  if (start != keys.end()) {
+    std::uint64_t value = 0;
+    if (read(lab::kStartCountKey, value) && value <= 0xFFFFFFFFULL) {
+      calibration.startCount = static_cast<std::uint32_t>(value);
+    } else if (calibration.error.empty()) {
+      calibration.error = std::string("calibration key ") + lab::kStartCountKey + " missing";
+    }
+  }
   return true;
 }
 
 struct Handle {
   explicit Handle(Calibration c)
-      : calibration(std::move(c)), component(calibration.maxAgeUs, calibration.recoveryRuns, calibration.error) {}
+      : calibration(std::move(c)), component(calibration.maxAgeUs, calibration.recoveryRuns, calibration.error, calibration.startCount) {}
 
   Calibration calibration;
   LabComponent component;

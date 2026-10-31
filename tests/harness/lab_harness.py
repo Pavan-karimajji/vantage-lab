@@ -15,10 +15,8 @@ which re-executes this file with the steps as JSON.
 from __future__ import annotations
 
 import argparse
-import ctypes
 import json
 import os
-import struct
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
@@ -90,7 +88,7 @@ class RunResult:
 class LabHarness:
     """One lab component, loaded from ``index.json``, ready to run."""
 
-    def __init__(self, index_path: str | Path, component: str, output_cap: int = 4096):
+    def __init__(self, index_path: str | Path, component: str, output_cap: int = 4096, bundle: str | Path | None = None):
         self.index_path = Path(index_path)
         self.component = component
         self.output_cap = output_cap
@@ -99,7 +97,7 @@ class LabHarness:
         self.library = LabLibrary.load(entry["library"])
         self.manifest = self.library.manifest()
         self.factory = MessageFactory(self.manifest.descriptor_set)
-        self.library.init(None)  # the bundle beside the library
+        self.library.init(bundle)  # None: the bundle beside the library; else a bundle variant (bundles.bundle_variant)
         self._types = {p.name: p.proto_type for p in self.manifest.inputs + self.manifest.outputs}
         self.input_names = [p.name for p in self.manifest.inputs if p.name != "control"]
 
@@ -163,27 +161,6 @@ class LabHarness:
             raise LabAbiError(f"fresh process failed ({completed.returncode}): {completed.stderr.strip()}")
         return [self.decode(r["ok"], {k: (None if v is None else bytes.fromhex(v)) for k, v in r["raw"].items()})
                 for r in json.loads(completed.stdout)]
-
-    # ---- white-box seeding of the component's own run count -------------------------------------
-    def seed_cycle_count(self, value: int, probe_counter: int = 0x5A5A1234, probe_time_us: int = 0x1122334455667788) -> int:
-        """Sets the component's own run count to ``value`` (the ABI has no way to). The count sits in
-        ``CycleStamp`` as ``{u32 ownCount, u32 measurementCounter, u64 sourceTimestampUs}``; a run with a
-        probe control puts a recognisable ``(ownCount, probe_counter, probe_time_us)`` in the instance, the
-        one place that triple occurs is found and its first word overwritten. Exactly one match is
-        required, else ``LabAbiError``. Returns the address written. Costs three probe runs (they count in the
-        run count the seed replaces)."""
-        for i in range(3):
-            self.run(Step(Control(probe_counter, probe_time_us, "RUN", 0xC0DE0000 + i)))
-        own = self.runs
-        window = 1024
-        base = self.library.handle
-        data = ctypes.string_at(base, window)
-        needle = struct.pack("<IIQ", own & 0xFFFFFFFF, probe_counter, probe_time_us)
-        hits = [i for i in range(0, window - len(needle) + 1, 4) if data[i:i + len(needle)] == needle]
-        if len(hits) != 1:
-            raise LabAbiError(f"cannot locate the run count in the instance: {len(hits)} matches of {needle.hex()}")
-        ctypes.memmove(base + hits[0], struct.pack("<I", value), 4)
-        return base + hits[0]
 
 
 def _child_main() -> int:
