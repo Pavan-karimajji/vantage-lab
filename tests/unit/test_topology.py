@@ -31,8 +31,9 @@ def test_lab07_running_example_loads_clean():
     assert (b.period_ms, b.phase_ms, b.jitter_ms, b.memory, b.outputs) == (40, 60, 4, True, ("out",))
     a = topology.component("A")
     assert (a.phase_ms, a.memory) == (20, False)  # phase defaults to the period
-    assert [s.name for s in topology.scenarios] == ["base", "restart", "fault"]
-    assert [case["name"] for case in topology.scenarios[0].resim] == ["cut_c", "all_simulated", "jump"]
+    assert [s.name for s in topology.scenarios] == ["base", "restart", "fault", "missing_sample", "missing_run",
+                                                    "no_ref_sync", "counter_jump"]
+    assert [case["name"] for case in topology.scenarios[0].resim] == ["cut_c", "all_simulated", "jump", "hang", "crash"]
 
 
 def test_lab07_producer_that_does_not_exist(tmp_path):

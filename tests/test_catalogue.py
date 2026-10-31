@@ -36,7 +36,7 @@ from lab_tools.messages import MessageFactory  # noqa: E402
 from lab_tools.reference import Recording, ReferenceResim, ReferenceResimError  # noqa: E402
 from lab_tools.setup_writer import (ProvisionalError, RunSetupError, load_provisional, provisional_values,  # noqa: E402
                                     write_run_setup)
-from lab_tools.topology import IMAGE_KIND, TopologyError, load_topology  # noqa: E402
+from lab_tools.topology import TopologyError, load_topology  # noqa: E402
 
 CATALOGUE = LAB_ROOT / "catalogue"
 PROVISIONAL = CATALOGUE / "provisional.yaml"
@@ -98,8 +98,6 @@ def record(tmp_path_factory):
             topology = load_topology(CATALOGUE / f"{topology_name}.yaml")
             if topology.refused_at_load:
                 pytest.skip(f"{topology_name} expects refusal at load; there is no recording to re-run")
-            if any(s.kind == IMAGE_KIND for s in topology.sources):
-                pytest.skip(f"{topology_name} has an image source; the car makes those in LAB-WP-08")
             index = index_for(topology_name)
             scenario = next(s for s in topology.scenarios if s.name == scenario_name)
             out = tmp_path_factory.mktemp(f"{topology_name}_{scenario_name}") / f"{scenario_name}.mcap"
@@ -118,6 +116,19 @@ def provisional_run_setup():
 
 def case_of(scenario, name):
     return next(c for c in scenario.resim if c["name"] == name)
+
+
+def not_judged_here(scenario, case):
+    """Why the exact re-run of this case is not judged in this file, or None. A scenario with ``recording:`` edits (the
+    drills that leave a sample or every refSync out) or ``expect: diverges`` has a recording the strict re-run is meant
+    to refuse or to differ on; ``tests/test_car_drills.py`` judges those. A case that sets a hang or crash switch needs
+    the supervisor (LAB-53); the reference re-run would hang with it."""
+    if scenario.recording or scenario.expect == "diverges":
+        return f"scenario {scenario.name} edits its recording or expects a difference (expect: {scenario.expect}); tests/test_car_drills.py judges it"
+    keys = {k for change in (case.get("config") or {}).values() for k in (change.get("set") or {})}
+    if any("_HANG_AFTER_RUNS" in k or "_CRASH_AFTER_RUNS" in k for k in keys):
+        return "the case sets a hang or crash switch; running it needs the supervisor (LAB-53)"
+    return None
 
 
 # ---- LAB-48: a file that expects refusal at load ----------------------------------------------------------------------
@@ -148,6 +159,9 @@ def test_SYT_RSY_04_c1_inputs_by_refsync_reproduce_the_car(record, topology_name
     case = case_of(scenario, case_name)
     if "jump_to_ms" in case:
         reason = "a jump is a Vantage host call (simEngineSeek); the lab's reference re-run has no jump"
+        print(f"SYT-RSY-04.c1 {topology_name}/{scenario_name}/{case_name}: skipped, {reason}")
+        pytest.skip(reason)
+    if (reason := not_judged_here(scenario, case)) is not None:
         print(f"SYT-RSY-04.c1 {topology_name}/{scenario_name}/{case_name}: skipped, {reason}")
         pytest.skip(reason)
     result = ReferenceResim(topology, recording, index).run(case.get("measured", []))
@@ -264,6 +278,8 @@ def test_SYT_RSY_04_without_ref_sync_the_mismatched_runs_are_counted(record, cap
     case = case_of(scenario, case_name)
     if "jump_to_ms" in case:
         pytest.skip("a jump is a Vantage host call (simEngineSeek)")
+    if (reason := not_judged_here(scenario, case)) is not None:
+        pytest.skip(reason)
     resim = ReferenceResim(topology, recording, index)
     with_sync = resim.run(case.get("measured", []))
     without = resim.run(case.get("measured", []), use_ref_sync=False)

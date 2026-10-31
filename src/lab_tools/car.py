@@ -2,7 +2,7 @@
 # Proprietary and Confidential.
 # COMPONENT: VANTAGE_LAB
 # @file src/lab_tools/car.py
-# @brief LAB-23..LAB-28, LAB-31, LAB-32: the fake car -- task clocks, sources, bus, event loop, control writer, restart and source-fault scripts (VANTAGE_Lab_Design.md section 5).
+# @brief LAB-23..LAB-28, LAB-31, LAB-32, LAB-49, LAB-50: the fake car -- task clocks, sample and image sources, bus, event loop, control writer, restart, source-fault, renumber and counter-jump scripts (VANTAGE_Lab_Design.md section 5).
 # @author Pavan Karimajji <Pavan.Karimajji@larsentoubro.com>
 """The fake car runs a topology's generated libraries through the generic ABI on their own task
 clocks and records every port. It is the independent check Vantage is compared with, so it shares no
@@ -17,8 +17,10 @@ the order: source samples, activations, starts; within a class in declaration or
 triggered by an input starts, and logs its control, right after the sample that triggers it is logged
 (after the whole run, when a component's own output triggers it).
 
-A scenario may carry ``car:`` with the verbs ``restart``, ``silent`` and ``invalid`` (section 5.5); any
-other ``car:`` verb and every ``recording:`` key is refused until its package exists (LAB-WP-08).
+A scenario may carry ``car:`` with the verbs ``restart``, ``silent``, ``invalid``, ``renumber`` and
+``counter_jump``, and ``recording:`` with ``drop_sample`` and ``drop_ref_sync`` (section 5.5); any other verb
+or key is refused. An ``image`` source's payload is ``adas.lab.LabImage``; its descriptor is built here
+from the signal header the libraries carry, because no library has a port of that type.
 """
 from __future__ import annotations
 
@@ -28,16 +30,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Mapping
 
+from google.protobuf import descriptor_pb2
+
 from .abi import InputPort, LabLibrary, Manifest, PortSet, load_index
 from .messages import MessageFactory
-from .recorder import McapRecorder, TopicSpec
+from .recorder import McapRecorder, RecordingEdits, TopicSpec
 from .topology import ComponentDesc, IMAGE_KIND, Scenario, SourceDesc, Topology
 
 CONTROL_TYPE = "adas.common.CycleControl"
 SAMPLE_TYPE = "adas.lab.LabSample"
+IMAGE_TYPE = "adas.lab.LabImage"
+IMAGE_FILE = "lab/lab_image.proto"
+HEADER_FILE = "common/signal_header.proto"
 SIG_OK = 1
 SIG_INVALID = 2
-CAR_VERBS = ("restart", "silent", "invalid")
+CAR_VERBS = ("restart", "silent", "invalid", "renumber", "counter_jump")
+RECORDING_KEYS = ("drop_sample", "drop_ref_sync")
 CONTROL_PORT = "control"
 OUTPUT_CAP = 4096
 
@@ -48,6 +56,43 @@ TOPIC_CLASSES = ("source", "control", "data out", "refSync", "compState")
 
 class CarError(RuntimeError):
     """The car cannot run what it was given, or a library broke the run."""
+
+
+def image_descriptor_set(library_descriptor_set: bytes) -> bytes:
+    """A ``FileDescriptorSet`` that holds ``adas.lab.LabImage``: the signal header file (and what it imports)
+    taken from a library's own set, then ``lab/lab_image.proto`` built by hand with the fields of
+    ``interfaces/proto/lab/lab_image.proto`` (a test compares the two). No library has a port of this type, so
+    none carries its descriptor."""
+    given = descriptor_pb2.FileDescriptorSet()
+    given.ParseFromString(library_descriptor_set)
+    by_name = {f.name: f for f in given.file}
+    if HEADER_FILE not in by_name:
+        raise CarError(f"the libraries' descriptor set has no {HEADER_FILE}; cannot describe {IMAGE_TYPE}")
+    result = descriptor_pb2.FileDescriptorSet()
+    done: set[str] = set()
+
+    def add(name: str) -> None:
+        if name in done:
+            return
+        done.add(name)
+        for dep in by_name[name].dependency:
+            add(dep)
+        result.file.add().CopyFrom(by_name[name])
+
+    add(HEADER_FILE)
+    image = result.file.add()
+    image.name, image.package, image.syntax = IMAGE_FILE, "adas.lab", "proto3"
+    image.dependency.append(HEADER_FILE)
+    message = image.message_type.add(name="LabImage")
+    field_type = descriptor_pb2.FieldDescriptorProto
+    for number, name, kind, type_name in ((1, "sig_header", field_type.TYPE_MESSAGE, ".adas.common.SignalHeader"),
+                                          (2, "width", field_type.TYPE_UINT32, ""),
+                                          (3, "height", field_type.TYPE_UINT32, ""),
+                                          (4, "pixels", field_type.TYPE_BYTES, "")):
+        entry = message.field.add(name=name, number=number, type=kind, label=field_type.LABEL_OPTIONAL, json_name=name)
+        if type_name:
+            entry.type_name = type_name
+    return result.SerializeToString()
 
 
 @dataclass(frozen=True)
@@ -91,30 +136,51 @@ class Task:
 
 
 class SourceTask(Task):
-    """A sample source: each new sample gets the previous counter plus 1 (the first is 1) and the
-    non-zero nominal time; ``value`` is the counter; ``cycle_counter`` equals the counter (LAB-24).
-    A sample whose nominal time is in a ``silent`` window is not made, so the counter does not advance;
-    one in an ``invalid`` window carries sticker INVALID (LAB-32). Windows are ``[from, from + for)``, µs."""
+    """A source: each new sample gets the previous counter plus 1 (the first is 1) and the non-zero nominal
+    time; ``value`` is the counter; ``cycle_counter`` equals the counter (LAB-24). A sample whose nominal time
+    is in a ``silent`` window is not made, so the counter does not advance; one in an ``invalid`` window
+    carries sticker INVALID (LAB-32). Windows are ``[from, from + for)``, µs.
+
+    An ``image`` source (LAB-49) makes ``adas.lab.LabImage`` with ``pixels[i] = (counter + i) mod 256``,
+    ``width * height`` of them, except the sample whose counter is ``big_frame.at_counter``: that one has
+    ``big_frame.bytes`` pixels. ``counter_jump`` (LAB-50) is a list of ``(at_counter, by)``: from the sample
+    that would have counter ``at_counter`` on, every counter is ``by`` higher (jumps add up). ``factory``
+    holds ``adas.lab.LabSample`` for a sample source and ``adas.lab.LabImage`` for an image source."""
 
     def __init__(self, desc: SourceDesc, seed: int, factory: MessageFactory,
-                 silent: tuple[tuple[int, int], ...] = (), invalid: tuple[tuple[int, int], ...] = ()):
-        if desc.kind == IMAGE_KIND:
-            raise CarError(f"source {desc.name}: image sources are LAB-49 (LAB-WP-08), not built yet")
+                 silent: tuple[tuple[int, int], ...] = (), invalid: tuple[tuple[int, int], ...] = (),
+                 counter_jump: tuple[tuple[int, int], ...] = ()):
         super().__init__(desc.name, desc.period_ms * 1000, desc.phase_ms * 1000, desc.jitter_ms * 1000, seed)
         self.desc = desc
         self._factory = factory
         self.counter = 0
+        self._steps = 0  # samples made; the counter is this plus the jumps reached
         self._silent = silent
         self._invalid = invalid
+        self._jumps = counter_jump
 
     def is_silent(self, nominal_us: int) -> bool:
         return any(a <= nominal_us < b for a, b in self._silent)
 
+    def pixels(self) -> bytes:
+        """The frame of the current counter: ``(counter + i) mod 256``, its normal or its big length."""
+        desc = self.desc
+        length = (desc.width or 0) * (desc.height or 0)
+        if desc.big_frame is not None and self.counter == desc.big_frame["at_counter"]:
+            length = desc.big_frame["bytes"]
+        ramp = bytes(range(256))
+        shift = self.counter % 256
+        return ((ramp[shift:] + ramp[:shift]) * (length // 256 + 1))[:length]
+
     def next_sample(self, nominal_us: int) -> bytes:
-        self.counter += 1
+        self._steps += 1
+        self.counter = self._steps + sum(by for at, by in self._jumps if self._steps >= at)
         if nominal_us <= 0:
             raise CarError(f"source {self.name}: nominal time {nominal_us} us is not positive")
-        message = self._factory.new(SAMPLE_TYPE, value=self.counter)
+        if self.desc.kind == IMAGE_KIND:
+            message = self._factory.new(IMAGE_TYPE, width=self.desc.width, height=self.desc.height, pixels=self.pixels())
+        else:
+            message = self._factory.new(SAMPLE_TYPE, value=self.counter)
         header = message.sig_header
         header.measurement_counter = self.counter
         header.source_timestamp_us = nominal_us
@@ -189,16 +255,21 @@ class CarScript:
     restarts: Mapping[str, frozenset[int]] = field(default_factory=dict)
     silent: Mapping[str, tuple[tuple[int, int], ...]] = field(default_factory=dict)
     invalid: Mapping[str, tuple[tuple[int, int], ...]] = field(default_factory=dict)
+    renumber: frozenset[str] = frozenset()
+    counter_jump: Mapping[str, tuple[tuple[int, int], ...]] = field(default_factory=dict)
+    edits: RecordingEdits = RecordingEdits()
 
 
 def parse_car_script(topology: Topology, scenario: Scenario) -> CarScript:
-    """Read ``scenario.car`` (verbs ``restart``, ``silent``, ``invalid``); anything else is a ``CarError``."""
+    """Read ``scenario.car`` (verbs ``restart``, ``silent``, ``invalid``, ``renumber``, ``counter_jump``) and
+    ``scenario.recording`` (``drop_sample``, ``drop_ref_sync``); anything else is a ``CarError``."""
     where = f"scenario {scenario.name}"
-    if scenario.recording:
-        raise CarError(f"{where}: recording keys ({', '.join(sorted(scenario.recording))}) are LAB-WP-08")
     unknown = sorted(set(scenario.car) - set(CAR_VERBS))
     if unknown:
-        raise CarError(f"{where}: car verb(s) {', '.join(unknown)} are not built (LAB-WP-08); built: {', '.join(CAR_VERBS)}")
+        raise CarError(f"{where}: car verb(s) {', '.join(unknown)} are not in the design's list: {', '.join(CAR_VERBS)}")
+    unknown = sorted(set(scenario.recording) - set(RECORDING_KEYS))
+    if unknown:
+        raise CarError(f"{where}: recording key(s) {', '.join(unknown)} are not in the design's list: {', '.join(RECORDING_KEYS)}")
 
     def entries(verb: str, keys: tuple[str, ...]) -> list[Mapping]:
         raw = scenario.car.get(verb, [])
@@ -226,9 +297,46 @@ def parse_car_script(topology: Topology, scenario: Scenario) -> CarScript:
                 raise CarError(f"{where}: car.{verb} names {e['source']!r}, which is not a source of {topology.name}")
             start = whole(verb, "from_ms", e["from_ms"], 0) * 1000
             windows[verb].setdefault(e["source"], []).append((start, start + whole(verb, "for_ms", e["for_ms"], 1) * 1000))
+    renumber = scenario.car.get("renumber", [])
+    if not isinstance(renumber, list) or not all(isinstance(c, str) for c in renumber):
+        raise CarError(f"{where}: car.renumber must be a list of component names")
+    for name in renumber:
+        if topology.component(name) is None:
+            raise CarError(f"{where}: car.renumber names {name!r}, which is not a component of {topology.name}")
+    jumps: dict[str, list[tuple[int, int]]] = {}
+    for e in entries("counter_jump", ("source", "at_counter", "by")):
+        if topology.source(e["source"]) is None:
+            raise CarError(f"{where}: car.counter_jump names {e['source']!r}, which is not a source of {topology.name}")
+        jumps.setdefault(e["source"], []).append((whole("counter_jump", "at_counter", e["at_counter"], 1),
+                                                  whole("counter_jump", "by", e["by"], 1)))
     return CarScript({c: frozenset(r) for c, r in restarts.items()},
                      {s: tuple(w) for s, w in windows["silent"].items()},
-                     {s: tuple(w) for s, w in windows["invalid"].items()})
+                     {s: tuple(w) for s, w in windows["invalid"].items()},
+                     frozenset(renumber), {s: tuple(sorted(j)) for s, j in jumps.items()},
+                     parse_recording_edits(topology, scenario))
+
+
+def parse_recording_edits(topology: Topology, scenario: Scenario) -> RecordingEdits:
+    """Read ``scenario.recording``: ``drop_sample: [{port, counter}]`` (``port`` is ``source.<name>`` of a source of
+    the topology) and ``drop_ref_sync: all``."""
+    where = f"scenario {scenario.name}"
+    recording = scenario.recording
+    dropped: set[tuple[str, int]] = set()
+    raw = recording.get("drop_sample", [])
+    if not isinstance(raw, list) or not all(isinstance(e, dict) and set(e) == {"port", "counter"} for e in raw):
+        raise CarError(f"{where}: recording.drop_sample must be a list of mappings with exactly port, counter")
+    for e in raw:
+        producer, _, source = str(e["port"]).partition(".")
+        if producer != "source" or topology.source(source) is None:
+            raise CarError(f"{where}: recording.drop_sample port {e['port']!r} must be source.<name> of a source of {topology.name}")
+        counter = e["counter"]
+        if isinstance(counter, bool) or not isinstance(counter, int) or counter < 1:
+            raise CarError(f"{where}: recording.drop_sample.counter must be an integer of at least 1, got {counter!r}")
+        dropped.add((e["port"], counter))
+    drop_ref_sync = recording.get("drop_ref_sync")
+    if drop_ref_sync not in (None, "all"):
+        raise CarError(f"{where}: recording.drop_ref_sync must be 'all', got {drop_ref_sync!r}")
+    return RecordingEdits(frozenset(dropped), drop_ref_sync == "all")
 
 
 def topic_class(topic: str) -> str:
@@ -292,6 +400,11 @@ class Car:
             raise
         self._descriptor_for_sample = self._descriptor_of(SAMPLE_TYPE)
         self._sample_factory = MessageFactory(self._descriptor_for_sample)
+        self._descriptor_for_image = b""
+        self._image_factory: MessageFactory | None = None
+        if any(s.kind == IMAGE_KIND for s in topology.sources):
+            self._descriptor_for_image = image_descriptor_set(self._manifests[topology.components[0].name].descriptor_set)
+            self._image_factory = MessageFactory(self._descriptor_for_image)
         self.control_writer = ControlWriter(self._factories, self.script.restarts)
         self.bus = Bus()
         self._runs = {c.name: 0 for c in topology.components}
@@ -319,7 +432,10 @@ class Car:
         """Every recorded topic: the sources (mocked) and every port of every component (simulated)."""
         result: dict[str, TopicSpec] = {}
         for source in self.topology.sources:
-            result[f"source.{source.name}"] = TopicSpec(SAMPLE_TYPE, self._descriptor_for_sample, "mocked")
+            image = source.kind == IMAGE_KIND
+            result[f"source.{source.name}"] = TopicSpec(IMAGE_TYPE if image else SAMPLE_TYPE,
+                                                        self._descriptor_for_image if image else self._descriptor_for_sample,
+                                                        "mocked")
         for comp in self.topology.components:
             manifest = self._manifests[comp.name]
             for decl in manifest.inputs:
@@ -331,7 +447,7 @@ class Car:
 
     def recording_manifest(self) -> dict[str, object]:
         """The ``manifest`` metadata: no wall-clock time, so one seed gives one file."""
-        return {
+        manifest = {
             "run_id": f"{self.topology.name}/{self.scenario.name}/{self.topology.seed}",
             "run_kind": "sim",
             "source_kind": "synthetic",
@@ -342,14 +458,18 @@ class Car:
                  "period_ns": (c.period_ms or 0) * 1_000_000}
                 for c in self.topology.components],
         }
+        if self.script.edits:
+            manifest["recording_edits"] = self.script.edits.as_manifest()
+        return manifest
 
     # ---- the event loop ---------------------------------------------------------------------------
     def run(self, recorder: McapRecorder) -> RunSummary:
         """Run the topology for its ``duration_ms``; every message goes to ``recorder`` and the bus."""
         topology = self.topology
         until = topology.duration_ms * 1000
-        sources = [SourceTask(s, topology.seed, self._sample_factory, self.script.silent.get(s.name, ()),
-                              self.script.invalid.get(s.name, ())) for s in topology.sources]
+        sources = [SourceTask(s, topology.seed, self._image_factory if s.kind == IMAGE_KIND else self._sample_factory,
+                              self.script.silent.get(s.name, ()), self.script.invalid.get(s.name, ()),
+                              self.script.counter_jump.get(s.name, ())) for s in topology.sources]
         tasks = {c.name: Task(c.name, (c.period_ms or 0) * 1000, (c.phase_ms or 0) * 1000, c.jitter_ms * 1000, topology.seed)
                  for c in topology.components if c.period_ms is not None}
         events: list[tuple[int, int, int, int, str]] = []  # (time, class, declaration order, tick, task name)
@@ -372,7 +492,7 @@ class Car:
                     continue  # a silent source logs nothing and its counter does not advance (LAB-32)
                 port = f"source.{name}"
                 payload = source.next_sample(source.nominal_us(k))
-                self._log(port, time_us, payload)
+                self._log(port, time_us, payload, source.counter)
                 self._fire_triggers([port], time_us)
             elif kind == ACTIVATION:
                 self._activate(name, time_us, k + 1, time_us, k)
@@ -387,15 +507,17 @@ class Car:
         """``run`` into a new ``.mcap`` file at ``path``."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with McapRecorder(path, self.topics(), self.recording_manifest()) as recorder:
+        with McapRecorder(path, self.topics(), self.recording_manifest(), self.script.edits) as recorder:
             summary = self.run(recorder)
         summary.file_size = path.stat().st_size
         return summary
 
     # ---- logging, activation, start ----------------------------------------------------------------
-    def _log(self, topic: str, time_us: int, payload: bytes) -> None:
+    def _log(self, topic: str, time_us: int, payload: bytes, counter: int | None = None) -> None:
+        """Record and put on the bus. A recording edit may leave the message out of the file (``counter`` is a
+        source sample's); the bus has it either way (section 5.5)."""
         assert self._recorder is not None
-        self._recorder.write(topic, time_us, payload)
+        self._recorder.write(topic, time_us, payload, counter)
         self.bus.put(topic, time_us, payload)
 
     def _activate(self, name: str, now_us: int, measurement_counter: int, source_timestamp_us: int,
@@ -454,6 +576,10 @@ class Car:
             payload = written.get(decl.name)
             if payload is None:
                 raise CarError(f"{name}: adasExec wrote no {decl.name} at {now_us} us")
+            if name in self.script.renumber:  # LAB-50: the component's own run count, not the control's counter
+                message = self._factories[name].parse(decl.proto_type, payload)
+                message.sig_header.measurement_counter = self._runs[name]
+                payload = message.SerializeToString(deterministic=True)
             self._log(f"{name}.{decl.name}", now_us, payload)
         self._fire_triggers([f"{name}.{d.name}" for d in manifest.outputs], now_us)
 

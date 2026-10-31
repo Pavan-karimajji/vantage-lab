@@ -11,3 +11,7 @@ scenarios:
     resim:
       - {name: by_control, trigger: {T: control}}    # a run per recorded control
       - {name: by_data, trigger: {T: in_X}}          # a run per in_X sample, as the car started it
+  - name: renumber
+    expect: diverges
+    car: {counter_jump: [{source: X, at_counter: 10, by: 1000}], renumber: [T]}
+    resim: [{name: by_data, trigger: {T: in_X}}]

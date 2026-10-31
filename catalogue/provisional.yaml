@@ -85,6 +85,10 @@ calibration:
     T:
       LAB_T_MAX_AGE_US: {value: 60000, status: provisional}      # X 30 + own jitter 0, twice
       LAB_T_RECOVERY_RUNS: {value: 2, status: provisional}
+  camera:
+    A:
+      LAB_A_MAX_AGE_US: {value: 60000, status: provisional}      # X 30 + own jitter 0, twice
+      LAB_A_RECOVERY_RUNS: {value: 2, status: provisional}
   loop_no_edge:
     A:
       LAB_A_MAX_AGE_US: {value: 40000, status: provisional}      # B 20 + own jitter 0, twice

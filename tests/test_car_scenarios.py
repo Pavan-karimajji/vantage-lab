@@ -160,7 +160,7 @@ def test_lab32_invalid_source_samples_carry_the_invalid_sticker_only_inside_the_
 
 def test_lab31_lab32_the_car_refuses_verbs_it_does_not_have(index_path, topology):
     base_scenario = scenario_of(topology, "base")
-    for car, recording in (({"renumber": ["A"]}, {}), ({}, {"drop_ref_sync": "all"})):
+    for car, recording in (({"teleport": ["A"]}, {}), ({}, {"drop_run": "all"})):
         with pytest.raises(CarError):
             Car(topology, dataclasses.replace(base_scenario, car=car, recording=recording), index_path)
     with pytest.raises(CarError, match="not a component"):

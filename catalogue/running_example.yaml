@@ -22,6 +22,8 @@ scenarios:
       - {name: cut_c, measured: [C]}          # A, B, D, E simulated; C measured
       - {name: all_simulated}
       - {name: jump, measured: [C], jump_to_ms: 1500}
+      - {name: hang, config: {B: {set: {LAB_B_HANG_AFTER_RUNS: 5}}}}     # needs the supervisor (LAB-53)
+      - {name: crash, config: {B: {set: {LAB_B_CRASH_AFTER_RUNS: 5}}}}   # needs the supervisor (LAB-53)
   - name: restart
     car: {restart: [{component: D, at_run: 30}]}
     resim: [{name: replay, measured: [C]}]
@@ -30,3 +32,32 @@ scenarios:
       silent:  [{source: Z, from_ms: 400,  for_ms: 920}]
       invalid: [{source: Z, from_ms: 1320, for_ms: 800}]
     resim: [{name: replay}]
+  # Drills (G4; ARCH section 12), section 6.2.
+  - name: missing_sample
+    recording:
+      drop_sample:
+        - {port: source.Y, counter: 20}
+        - {port: source.Y, counter: 21}
+        - {port: source.Y, counter: 22}
+    resim: [{name: all_simulated}]
+  - name: missing_run
+    recording:
+      drop_sample:
+        - {port: source.Y, counter: 30}
+        - {port: source.Y, counter: 31}
+        - {port: source.Y, counter: 32}
+        - {port: source.Y, counter: 33}
+        - {port: source.Y, counter: 34}
+        - {port: source.Y, counter: 35}
+        - {port: source.Y, counter: 36}
+        - {port: source.Y, counter: 37}
+        - {port: source.Y, counter: 38}
+        - {port: source.Y, counter: 39}
+    resim: [{name: all_simulated}]
+  - name: no_ref_sync
+    expect: diverges
+    recording: {drop_ref_sync: all}
+    resim: [{name: all_simulated}]
+  - name: counter_jump
+    car: {counter_jump: [{source: X, at_counter: 50, by: 1000}]}
+    resim: [{name: all_simulated}]

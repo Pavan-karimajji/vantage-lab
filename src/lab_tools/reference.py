@@ -197,7 +197,7 @@ class ReferenceResim:
                 lib = LabLibrary.load(entry["library"])
                 libraries[name] = lib
                 manifest = lib.manifest()
-                plans[name] = self._plan(topology.component(name), manifest, MessageFactory(manifest.descriptor_set))  # type: ignore[arg-type]
+                plans[name] = self._plan(topology.component(name), manifest, MessageFactory(manifest.descriptor_set), use_ref_sync)  # type: ignore[arg-type]
                 lib.init(None if config_dirs is None or name not in config_dirs else config_dirs[name])
             cache: dict[str, list[_Sample]] = {}
             produced = {n: {p.name: [] for p in plans[n].manifest.outputs} for n in simulated}
@@ -235,15 +235,17 @@ class ReferenceResim:
         return ReferenceResult(topology.name, use_ref_sync,
                                {n: self._compare(plans[n], produced[n]) for n in simulated})
 
-    def _plan(self, comp: ComponentDesc, manifest: Manifest, factory: MessageFactory) -> _Plan:
+    def _plan(self, comp: ComponentDesc, manifest: Manifest, factory: MessageFactory, use_ref_sync: bool = True) -> _Plan:
         rec = self.recording
         controls = rec.topic(f"{comp.name}.{CONTROL_PORT}")
         recorded_msgs = {p.name: rec.topic(f"{comp.name}.{p.name}") for p in manifest.outputs}
+        if not use_ref_sync and controls and not recorded_msgs.get(REF_SYNC_PORT):
+            del recorded_msgs[REF_SYNC_PORT]  # no refSync topic and the time rule does not read one: compare the ports present
         for port, msgs in recorded_msgs.items():
             if len(msgs) != len(controls):
                 raise self._fail(comp.name, f"{len(controls)} recorded controls but {len(msgs)} on {port}")
         starts = [m.log_time_us for m in recorded_msgs[COMP_STATE_PORT]]
-        return _Plan(comp, manifest, factory, controls, starts, recorded_msgs[REF_SYNC_PORT],
+        return _Plan(comp, manifest, factory, controls, starts, recorded_msgs.get(REF_SYNC_PORT, []),
                      {p: [m.payload for m in msgs] for p, msgs in recorded_msgs.items()},
                      {p.name: p.proto_type for p in manifest.outputs})
 
@@ -313,6 +315,7 @@ class ReferenceResim:
             produced[decl.name].append(payload)
 
     def _compare(self, plan: _Plan, produced: Mapping[str, list[bytes]]) -> ComponentResult:
+        produced = {p: msgs for p, msgs in produced.items() if p in plan.recorded}  # a dropped refSync topic is not compared
         ports = {p: equal_outputs(plan.recorded[p], produced[p], plan.factory, plan.types[p]) for p in produced}
         bad = 0
         for run in range(plan.runs):
