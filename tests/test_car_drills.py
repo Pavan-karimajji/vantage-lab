@@ -32,7 +32,7 @@ from lab_tools.abi import LabLibrary, load_index  # noqa: E402
 from lab_tools.bundles import bundle_sha256  # noqa: E402
 from lab_tools.car import Car, CarError, image_descriptor_set, parse_car_script  # noqa: E402
 from lab_tools.messages import MessageFactory  # noqa: E402
-from lab_tools.recorder import McapRecorder, RecordingEdits, TopicSpec, apply_recording_edits  # noqa: E402
+from lab_tools.recorder import McapRecorder, RecordingEdits, TopicSpec, apply_recording_edits, use_writer  # noqa: E402
 from lab_tools.reference import Recording, ReferenceResim, ReferenceResimError  # noqa: E402
 from lab_tools.setup_writer import load_provisional, provisional_values, write_run_setup  # noqa: E402
 from lab_tools.topology import load_topology  # noqa: E402
@@ -284,12 +284,14 @@ def test_lab51_apply_recording_edits_drops_only_what_the_edit_names():
     assert not RecordingEdits() and edits and no_sync
 
 
-def test_lab51_the_recorder_leaves_edited_messages_and_topics_out(tmp_path):
+def test_lab51_the_recorder_leaves_edited_messages_and_topics_out(tmp_path, index_path):
     """The file has no ``refSync`` channel and no message of the dropped sample; the metadata states the edit's topics only."""
+    use_writer(load_index(index_path)["interfaces_python"])
     topics = {"source.Y": TopicSpec("x.Y", b"d", "mocked"), "A.refSync": TopicSpec("x.R", b"d", "simulated"),
               "A.out": TopicSpec("x.O", b"d", "simulated")}
     path = tmp_path / "edited.mcap"
-    with McapRecorder(path, topics, {"scenario": "t"}, RecordingEdits(frozenset({("source.Y", 2)}), True)) as recorder:
+    manifest = {"scenario": "t", "source_kind": "synthetic", "run_kind": "sim", "components": []}  # the writer has no defaults
+    with McapRecorder(path, topics, manifest, RecordingEdits(frozenset({("source.Y", 2)}), True)) as recorder:
         for counter in (1, 2, 3):
             recorder.write("source.Y", counter * 100, bytes([counter]), counter)
             recorder.write("A.refSync", counter * 100, b"r")  # the car still writes it; the recorder leaves it out
@@ -300,7 +302,7 @@ def test_lab51_the_recorder_leaves_edited_messages_and_topics_out(tmp_path):
     with open(path, "rb") as f:
         assert [m.data for _, _, m in make_reader(f).iter_messages(topics=["source.Y"])] == [bytes([1]), bytes([3])]
     with pytest.raises(Exception, match="was not declared"):
-        with McapRecorder(tmp_path / "x.mcap", topics, {}) as recorder:
+        with McapRecorder(tmp_path / "x.mcap", topics, manifest) as recorder:
             recorder.write("nothing", 1, b"")
 
 

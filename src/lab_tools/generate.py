@@ -284,15 +284,20 @@ def generate_component(topology: Topology, comp: ComponentDesc, out_dir: Path, p
     return {"dir": comp_dir, "build_id": digest.hexdigest()[:16]}
 
 
-def write_index(path: Path, topology: str, entries: Mapping[str, Mapping[str, str]]) -> None:
-    """``<sil build dir>/lab/<topology>/index.json``: component -> library path, config folder, build id."""
-    text = json.dumps({"topology": topology, "components": dict(entries)}, indent=2, sort_keys=True)
+def write_index(path: Path, topology: str, entries: Mapping[str, Mapping[str, str]],
+                interfaces_python: Path | None = None) -> None:
+    """``<sil build dir>/lab/<topology>/index.json``: component -> library path, config folder, build id; and
+    ``interfaces_python``, the ``interfaces`` package's ``python/`` folder holding the recording writer."""
+    index: dict[str, Any] = {"topology": topology, "components": dict(entries)}
+    if interfaces_python is not None:
+        index["interfaces_python"] = Path(interfaces_python).as_posix()
+    text = json.dumps(index, indent=2, sort_keys=True)
     _write(path, text + "\n")
 
 
 def generate_topology(topology: Topology, out_dir: Path, provisional: Mapping[str, Any], *,
                       lab_dir: Path | None = None, library_prefix: str = "", library_suffix: str = "",
-                      template_dir: Path = TEMPLATE_DIR) -> dict[str, dict[str, str]]:
+                      template_dir: Path = TEMPLATE_DIR, interfaces_python: Path | None = None) -> dict[str, dict[str, str]]:
     """Generate every component of ``topology``; write ``index.json``; return the index entries."""
     lab_dir = Path(lab_dir) if lab_dir is not None else Path(out_dir)
     entries: dict[str, dict[str, str]] = {}
@@ -305,7 +310,7 @@ def generate_topology(topology: Topology, out_dir: Path, provisional: Mapping[st
             "config": (folder / "config").as_posix(),
             "build_id": info["build_id"],
         }
-    write_index(lab_dir / topology.name / "index.json", topology.name, entries)
+    write_index(lab_dir / topology.name / "index.json", topology.name, entries, interfaces_python)
     return entries
 
 
@@ -327,12 +332,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lab-dir", type=Path, help="<sil build dir>/lab; default: --out")
     parser.add_argument("--library-prefix", default="")
     parser.add_argument("--library-suffix", default="")
+    parser.add_argument("--interfaces-python", type=Path, help="the interfaces package's python/ folder, for index.json")
     args = parser.parse_args(argv)
     try:
         topology = load_topology(args.topology)
         provisional = load_provisional(args.provisional or args.topology.parent / PROVISIONAL_FILE)
         generate_topology(topology, args.out, provisional, lab_dir=args.lab_dir,
-                          library_prefix=args.library_prefix, library_suffix=args.library_suffix)
+                          library_prefix=args.library_prefix, library_suffix=args.library_suffix,
+                          interfaces_python=args.interfaces_python)
     except (TopologyError, GenerateError, ProvisionalError) as exc:
         print(f"lab_tools.generate: {exc}", file=sys.stderr)
         return 1

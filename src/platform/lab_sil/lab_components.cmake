@@ -10,6 +10,9 @@ include(config_bundle_pack)
 # The real ego parameters of the base project, from the adas-shared-config package (R-SIM-3a).
 find_package(AdasSharedConfig REQUIRED)
 set(LAB_EGO_PARAMS_YAML "${adas-shared-config_RES_DIRS_RELEASE}/base/vehicle/ego_params.yaml")
+# The Python recording writer (adas_recording) of the adas-interfaces package, through the package as Conan
+# exposes it; the generator writes this folder into index.json for the fake car (VANTAGE_Lab_Design.md 5.6).
+set(LAB_INTERFACES_PYTHON "${adas-interfaces_PACKAGE_FOLDER_RELEASE}/python")
 
 function(lab_add_topology TOPOLOGY_FILE)
     get_filename_component(_topology "${TOPOLOGY_FILE}" NAME_WE)
@@ -19,6 +22,10 @@ function(lab_add_topology TOPOLOGY_FILE)
     endif()
     get_filename_component(_catalogue_dir "${TOPOLOGY_FILE}" DIRECTORY)
     get_filename_component(_lab_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../.." ABSOLUTE)
+    if(NOT EXISTS "${LAB_INTERFACES_PYTHON}/adas_recording/writer.py")
+        message(FATAL_ERROR "lab_add_topology(${_topology}): the adas-interfaces package has no python/adas_recording "
+                            "(${LAB_INTERFACES_PYTHON}); a package revision that ships python/ is required")
+    endif()
     set(_gen_dir "${CMAKE_BINARY_DIR}/lab_generated")
     set(_lab_dir "${CMAKE_BINARY_DIR}/lab")
 
@@ -32,6 +39,7 @@ function(lab_add_topology TOPOLOGY_FILE)
                 "${Python3_EXECUTABLE}" -m lab_tools.generate
                 --topology "${TOPOLOGY_FILE}" --out "${_gen_dir}" --lab-dir "${_lab_dir}"
                 --library-prefix "${CMAKE_SHARED_LIBRARY_PREFIX}" --library-suffix "${CMAKE_SHARED_LIBRARY_SUFFIX}"
+                --interfaces-python "${LAB_INTERFACES_PYTHON}"
         WORKING_DIRECTORY "${_lab_root}"
         RESULT_VARIABLE _rc
         OUTPUT_VARIABLE _out

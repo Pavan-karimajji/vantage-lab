@@ -187,7 +187,8 @@ def decode_manifest(raw: bytes) -> Manifest:
 
 
 def load_index(index_path: str | Path) -> dict:
-    """Read a build tree's ``index.json``: ``{"topology", "components": {name: {library, config, build_id}}}``."""
+    """Read a build tree's ``index.json``: ``{"topology", "interfaces_python", "components": {name: {library, config,
+    build_id}}}``; ``interfaces_python`` is the ``interfaces`` package's ``python/`` folder, where the recording writer is."""
     return json.loads(Path(index_path).read_text(encoding="utf-8"))
 
 

@@ -34,7 +34,7 @@ from google.protobuf import descriptor_pb2
 
 from .abi import InputPort, LabLibrary, Manifest, PortSet, load_index
 from .messages import MessageFactory
-from .recorder import McapRecorder, RecordingEdits, TopicSpec
+from .recorder import McapRecorder, RecordingEdits, TopicSpec, use_writer
 from .topology import ComponentDesc, IMAGE_KIND, Scenario, SourceDesc, Topology
 
 CONTROL_TYPE = "adas.common.CycleControl"
@@ -380,6 +380,9 @@ class Car:
         self.scenario = scenario
         self.index_path = Path(index_path)
         index = load_index(self.index_path)
+        if not index.get("interfaces_python"):
+            raise CarError(f"{self.index_path}: no interfaces_python entry (the build writes it; build again)")
+        use_writer(index["interfaces_python"])  # the recording writer is imported from the interfaces package
         self._libs: dict[str, LabLibrary] = {}
         self._manifests: dict[str, Manifest] = {}
         self._factories: dict[str, MessageFactory] = {}

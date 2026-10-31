@@ -2,17 +2,17 @@
 # Proprietary and Confidential.
 # COMPONENT: VANTAGE_LAB
 # @file src/lab_tools/recorder.py
-# @brief LAB-29, LAB-51: writes the fake car's recording as an .mcap file, applying the scenario's recording edits (VANTAGE_Lab_Design.md sections 5.5 and 5.6).
+# @brief LAB-29, LAB-51, LAB-55: the scenario's recording edits, and the fake car's recording written through the interfaces writer (VANTAGE_Lab_Design.md sections 5.5 and 5.6).
 # @author Pavan Karimajji <Pavan.Karimajji@larsentoubro.com>
-"""``McapRecorder``: one channel per declared topic, schemas taken from the libraries' own manifests,
-``log_time`` in integer nanoseconds, and metadata that holds no wall-clock time, so one topology,
-scenario and seed always give byte-identical files.
+"""The fake car's recording: the lab's own recording edits, written through the one Python writer in the
+``interfaces`` package (``adas_recording.McapRecorder``, ``RCT_Architecture.md`` section 6a, ``D22``).
 
-Topics are registered in sorted order before the first message, so channel and schema numbers never
-depend on dict or event order. Messages go in the order ``write`` is called; equal logging times keep
-that order. The metadata blocks use the conventions of the recordings Vantage reads: ``manifest``
-(one ``yaml`` entry, ``manifest_version`` 1 so a reader knows ``publish_time`` is not a capture time)
-and ``topic_provenance`` (topic -> origin tag).
+The writer is found through ``index.json`` (``interfaces_python``, the package's ``python/`` folder, put on the
+import path by ``use_writer`` before the first recording), never through a sibling checkout. Topics, channel
+numbers, message order, times and metadata are the writer's. The lab gives only its own argument values: no
+logging time (so one topology, scenario and seed always give byte-identical files), sources ``mocked``,
+component ports ``simulated`` (the caller's ``TopicSpec.provenance``), every port ``full`` in ``record_policies``
+except the ports a drill drops, which are ``excluded`` so the hole is stated, and ``library="vantage-lab"``.
 
 A scenario's ``recording:`` edits (``drop_sample``, ``drop_ref_sync``) are applied here, when the file is
 written (``apply_recording_edits``): the car's bus still had the sample, and the refSync of a run still names
@@ -20,21 +20,18 @@ a dropped sample, so the file is a recording with a hole in it, which is what th
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Mapping
+from typing import Mapping
 
-import yaml
-from mcap.writer import Writer
-
-MANIFEST_VERSION = 1  # below the capture-time version: publish_time equals log_time and is not a capture stamp
 LIBRARY_ID = "vantage-lab"
-MANIFEST_BLOCK = "manifest"
-PROVENANCE_BLOCK = "topic_provenance"
 
 
-class RecorderError(RuntimeError):
-    """The recorder was asked for something that would make the file depend on call order or luck."""
+def use_writer(python_dir: str | Path) -> None:
+    """Put the ``interfaces`` package's ``python/`` folder (``index.json`` ``interfaces_python``) on the import path."""
+    if str(python_dir) not in sys.path:
+        sys.path.insert(0, str(python_dir))
 
 
 @dataclass(frozen=True)
@@ -77,64 +74,37 @@ class TopicSpec:
 
 
 class McapRecorder:
-    """Writes one recording. Use as a context manager, or call ``close``."""
+    """Writes one recording through ``adas_recording.McapRecorder``. Use as a context manager, or call ``close``.
+
+    ``topics`` are every declared port; the ports the edits drop are listed ``excluded`` in ``record_policies``
+    and get no topic, every other port is ``full``. ``manifest`` states ``source_kind``, ``run_kind`` and
+    ``components`` itself; the writer refuses a file that does not (``RecordingError``)."""
 
     def __init__(self, path: str | Path, topics: Mapping[str, TopicSpec], manifest: Mapping[str, object],
                  edits: RecordingEdits = RecordingEdits()):
+        from adas_recording.writer import McapRecorder as Writer, TopicSpec as WriterTopic  # use_writer first
+
         self.path = Path(path)
         self._edits = edits
-        topics = {t: spec for t, spec in topics.items() if apply_recording_edits(edits, t)}
-        self._file: IO[bytes] | None = self.path.open("wb")
-        self._writer = Writer(self._file)
-        self._writer.start(profile="", library=LIBRARY_ID)
-        self._channels: dict[str, int] = {}
-        self._sequence: dict[str, int] = {}
-        self._counts: dict[str, int] = {}
-        self._last_time_us = 0
-        schemas: dict[tuple[str, bytes], int] = {}
-        for topic in sorted(topics):  # channel numbers are a function of the topic names alone
-            spec = topics[topic]
-            key = (spec.schema_name, spec.descriptor_set)
-            if key not in schemas:
-                schemas[key] = self._writer.register_schema(
-                    name=spec.schema_name, encoding="protobuf", data=spec.descriptor_set)
-            self._channels[topic] = self._writer.register_channel(
-                topic=topic, message_encoding="protobuf", schema_id=schemas[key])
-            self._sequence[topic] = 0
-            self._counts[topic] = 0
+        written = {t: spec for t, spec in topics.items() if apply_recording_edits(edits, t)}
         block = dict(manifest)
-        block["manifest_version"] = MANIFEST_VERSION
-        self._writer.add_metadata(MANIFEST_BLOCK, {"yaml": yaml.safe_dump(block, sort_keys=True)})
-        self._writer.add_metadata(PROVENANCE_BLOCK, {t: topics[t].provenance for t in sorted(topics)})
+        block["record_policies"] = {t: "full" if t in written else "excluded" for t in sorted(topics)}
+        self._writer = Writer(self.path, {t: WriterTopic(s.schema_name, s.descriptor_set, s.provenance)
+                                          for t, s in written.items()}, block, library=LIBRARY_ID)
 
     @property
     def counts(self) -> dict[str, int]:
         """Messages written per topic so far."""
-        return dict(self._counts)
+        return self._writer.counts
 
     def write(self, topic: str, log_time_us: int, payload: bytes, counter: int | None = None) -> None:
-        """Append one message logged at ``log_time_us`` (integer µs); times never go backwards. ``counter`` is
+        """Append one message logged at ``log_time_us`` (integer us); times never go backwards. ``counter`` is
         a source sample's ``measurement_counter``; a recording edit may leave the message out (LAB-51)."""
-        if self._file is None:
-            raise RecorderError("write after close")
-        if not apply_recording_edits(self._edits, topic, counter):
-            return
-        if topic not in self._channels:
-            raise RecorderError(f"topic {topic!r} was not declared (declared: {', '.join(sorted(self._channels))})")
-        if log_time_us < self._last_time_us:
-            raise RecorderError(f"{topic}: logging time {log_time_us} us is before {self._last_time_us} us already written")
-        self._last_time_us = log_time_us
-        ns = log_time_us * 1000
-        self._writer.add_message(channel_id=self._channels[topic], log_time=ns, data=bytes(payload),
-                                 publish_time=ns, sequence=self._sequence[topic])
-        self._sequence[topic] += 1
-        self._counts[topic] += 1
+        if apply_recording_edits(self._edits, topic, counter):
+            self._writer.write(topic, log_time_us, payload)
 
     def close(self) -> None:
-        if self._file is not None:
-            self._writer.finish()
-            self._file.close()
-            self._file = None
+        self._writer.close()
 
     def __enter__(self) -> "McapRecorder":
         return self
