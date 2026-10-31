@@ -2,7 +2,7 @@
 # Proprietary and Confidential.
 # COMPONENT: VANTAGE_LAB
 # @file src/lab_tools/car.py
-# @brief LAB-23..LAB-28: the fake car -- task clocks, sources, bus, event loop and control writer (VANTAGE_Lab_Design.md section 5).
+# @brief LAB-23..LAB-28, LAB-31, LAB-32: the fake car -- task clocks, sources, bus, event loop, control writer, restart and source-fault scripts (VANTAGE_Lab_Design.md section 5).
 # @author Pavan Karimajji <Pavan.Karimajji@larsentoubro.com>
 """The fake car runs a topology's generated libraries through the generic ABI on their own task
 clocks and records every port. It is the independent check Vantage is compared with, so it shares no
@@ -17,8 +17,8 @@ the order: source samples, activations, starts; within a class in declaration or
 triggered by an input starts, and logs its control, right after the sample that triggers it is logged
 (after the whole run, when a component's own output triggers it).
 
-Only what the scenario ``base`` needs exists here: a scenario that carries ``car:`` or ``recording:``
-keys is refused (``car.restart`` and the other verbs belong to LAB-WP-05 and LAB-WP-08).
+A scenario may carry ``car:`` with the verbs ``restart``, ``silent`` and ``invalid`` (section 5.5); any
+other ``car:`` verb and every ``recording:`` key is refused until its package exists (LAB-WP-08).
 """
 from __future__ import annotations
 
@@ -36,6 +36,8 @@ from .topology import ComponentDesc, IMAGE_KIND, Scenario, SourceDesc, Topology
 CONTROL_TYPE = "adas.common.CycleControl"
 SAMPLE_TYPE = "adas.lab.LabSample"
 SIG_OK = 1
+SIG_INVALID = 2
+CAR_VERBS = ("restart", "silent", "invalid")
 CONTROL_PORT = "control"
 OUTPUT_CAP = 4096
 
@@ -90,15 +92,23 @@ class Task:
 
 class SourceTask(Task):
     """A sample source: each new sample gets the previous counter plus 1 (the first is 1) and the
-    non-zero nominal time; ``value`` is the counter; ``cycle_counter`` equals the counter (LAB-24)."""
+    non-zero nominal time; ``value`` is the counter; ``cycle_counter`` equals the counter (LAB-24).
+    A sample whose nominal time is in a ``silent`` window is not made, so the counter does not advance;
+    one in an ``invalid`` window carries sticker INVALID (LAB-32). Windows are ``[from, from + for)``, µs."""
 
-    def __init__(self, desc: SourceDesc, seed: int, factory: MessageFactory):
+    def __init__(self, desc: SourceDesc, seed: int, factory: MessageFactory,
+                 silent: tuple[tuple[int, int], ...] = (), invalid: tuple[tuple[int, int], ...] = ()):
         if desc.kind == IMAGE_KIND:
             raise CarError(f"source {desc.name}: image sources are LAB-49 (LAB-WP-08), not built yet")
         super().__init__(desc.name, desc.period_ms * 1000, desc.phase_ms * 1000, desc.jitter_ms * 1000, seed)
         self.desc = desc
         self._factory = factory
         self.counter = 0
+        self._silent = silent
+        self._invalid = invalid
+
+    def is_silent(self, nominal_us: int) -> bool:
+        return any(a <= nominal_us < b for a, b in self._silent)
 
     def next_sample(self, nominal_us: int) -> bytes:
         self.counter += 1
@@ -109,7 +119,7 @@ class SourceTask(Task):
         header.measurement_counter = self.counter
         header.source_timestamp_us = nominal_us
         header.cycle_counter = self.counter
-        header.sig_status = SIG_OK
+        header.sig_status = SIG_INVALID if any(a <= nominal_us < b for a, b in self._invalid) else SIG_OK
         return message.SerializeToString(deterministic=True)
 
 
@@ -151,13 +161,15 @@ class ControlWriter:
 
     ``measurement_counter`` and ``source_timestamp_us`` come from what started the run; the
     ``cycle_counter`` is the car's count of runs of that component from 1; the sticker is OK;
-    ``op_mode`` is RESTART on the first run, otherwise RUN. It never looks at any ``compState``."""
+    ``op_mode`` is RESTART on the first run and on each run ``restarts`` lists for the component
+    (the scenario's ``car.restart``), otherwise RUN. It never looks at any ``compState``."""
 
-    def __init__(self, factories: Mapping[str, MessageFactory]):
+    def __init__(self, factories: Mapping[str, MessageFactory], restarts: Mapping[str, frozenset[int]] | None = None):
         self._factories = factories
+        self._restarts = restarts or {}
 
     def op_mode(self, component: str, run: int) -> str:
-        return "RESTART" if run == 1 else "RUN"
+        return "RESTART" if run == 1 or run in self._restarts.get(component, ()) else "RUN"
 
     def write(self, component: str, run: int, measurement_counter: int, source_timestamp_us: int) -> bytes:
         factory = self._factories[component]
@@ -169,6 +181,54 @@ class ControlWriter:
         header.cycle_counter = run
         header.sig_status = SIG_OK
         return message.SerializeToString(deterministic=True)
+
+
+@dataclass(frozen=True)
+class CarScript:
+    """What a scenario's ``car:`` block asks of the car (section 5.5), checked against the topology."""
+    restarts: Mapping[str, frozenset[int]] = field(default_factory=dict)
+    silent: Mapping[str, tuple[tuple[int, int], ...]] = field(default_factory=dict)
+    invalid: Mapping[str, tuple[tuple[int, int], ...]] = field(default_factory=dict)
+
+
+def parse_car_script(topology: Topology, scenario: Scenario) -> CarScript:
+    """Read ``scenario.car`` (verbs ``restart``, ``silent``, ``invalid``); anything else is a ``CarError``."""
+    where = f"scenario {scenario.name}"
+    if scenario.recording:
+        raise CarError(f"{where}: recording keys ({', '.join(sorted(scenario.recording))}) are LAB-WP-08")
+    unknown = sorted(set(scenario.car) - set(CAR_VERBS))
+    if unknown:
+        raise CarError(f"{where}: car verb(s) {', '.join(unknown)} are not built (LAB-WP-08); built: {', '.join(CAR_VERBS)}")
+
+    def entries(verb: str, keys: tuple[str, ...]) -> list[Mapping]:
+        raw = scenario.car.get(verb, [])
+        if not isinstance(raw, list) or not all(isinstance(e, dict) for e in raw):
+            raise CarError(f"{where}: car.{verb} must be a list of mappings with {', '.join(keys)}")
+        for e in raw:
+            if set(e) != set(keys):
+                raise CarError(f"{where}: car.{verb} entry {e!r} must have exactly {', '.join(keys)}")
+        return raw
+
+    def whole(verb: str, key: str, value: object, minimum: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise CarError(f"{where}: car.{verb}.{key} must be an integer of at least {minimum}, got {value!r}")
+        return value
+
+    restarts: dict[str, set[int]] = {}
+    for e in entries("restart", ("component", "at_run")):
+        if topology.component(e["component"]) is None:
+            raise CarError(f"{where}: car.restart names {e['component']!r}, which is not a component of {topology.name}")
+        restarts.setdefault(e["component"], set()).add(whole("restart", "at_run", e["at_run"], 1))
+    windows: dict[str, dict[str, list[tuple[int, int]]]] = {"silent": {}, "invalid": {}}
+    for verb in ("silent", "invalid"):
+        for e in entries(verb, ("source", "from_ms", "for_ms")):
+            if topology.source(e["source"]) is None:
+                raise CarError(f"{where}: car.{verb} names {e['source']!r}, which is not a source of {topology.name}")
+            start = whole(verb, "from_ms", e["from_ms"], 0) * 1000
+            windows[verb].setdefault(e["source"], []).append((start, start + whole(verb, "for_ms", e["for_ms"], 1) * 1000))
+    return CarScript({c: frozenset(r) for c, r in restarts.items()},
+                     {s: tuple(w) for s, w in windows["silent"].items()},
+                     {s: tuple(w) for s, w in windows["invalid"].items()})
 
 
 def topic_class(topic: str) -> str:
@@ -207,9 +267,7 @@ class Car:
     def __init__(self, topology: Topology, scenario: Scenario, index_path: str | Path):
         if topology.refused_at_load:
             raise CarError(f"{topology.name}: expects refusal at load; the car does not run it")
-        if scenario.car or scenario.recording:
-            raise CarError(f"scenario {scenario.name}: car/recording keys "
-                           f"({', '.join(sorted(list(scenario.car) + list(scenario.recording)))}) are LAB-WP-05/08")
+        self.script = parse_car_script(topology, scenario)
         self.topology = topology
         self.scenario = scenario
         self.index_path = Path(index_path)
@@ -234,7 +292,7 @@ class Car:
             raise
         self._descriptor_for_sample = self._descriptor_of(SAMPLE_TYPE)
         self._sample_factory = MessageFactory(self._descriptor_for_sample)
-        self.control_writer = ControlWriter(self._factories)
+        self.control_writer = ControlWriter(self._factories, self.script.restarts)
         self.bus = Bus()
         self._runs = {c.name: 0 for c in topology.components}
         self._recorder: McapRecorder | None = None
@@ -290,7 +348,8 @@ class Car:
         """Run the topology for its ``duration_ms``; every message goes to ``recorder`` and the bus."""
         topology = self.topology
         until = topology.duration_ms * 1000
-        sources = [SourceTask(s, topology.seed, self._sample_factory) for s in topology.sources]
+        sources = [SourceTask(s, topology.seed, self._sample_factory, self.script.silent.get(s.name, ()),
+                              self.script.invalid.get(s.name, ())) for s in topology.sources]
         tasks = {c.name: Task(c.name, (c.period_ms or 0) * 1000, (c.phase_ms or 0) * 1000, c.jitter_ms * 1000, topology.seed)
                  for c in topology.components if c.period_ms is not None}
         events: list[tuple[int, int, int, int, str]] = []  # (time, class, declaration order, tick, task name)
@@ -309,6 +368,8 @@ class Car:
         for time_us, kind, _order, k, name in events:
             if kind == SAMPLE:
                 source = by_name[name]
+                if source.is_silent(source.nominal_us(k)):
+                    continue  # a silent source logs nothing and its counter does not advance (LAB-32)
                 port = f"source.{name}"
                 payload = source.next_sample(source.nominal_us(k))
                 self._log(port, time_us, payload)

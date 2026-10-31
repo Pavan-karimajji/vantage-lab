@@ -22,3 +22,11 @@ scenarios:
       - {name: cut_c, measured: [C]}          # A, B, D, E simulated; C measured
       - {name: all_simulated}
       - {name: jump, measured: [C], jump_to_ms: 1500}
+  - name: restart
+    car: {restart: [{component: D, at_run: 30}]}
+    resim: [{name: replay, measured: [C]}]
+  - name: fault
+    car:
+      silent:  [{source: Z, from_ms: 400,  for_ms: 920}]
+      invalid: [{source: Z, from_ms: 1320, for_ms: 800}]
+    resim: [{name: replay}]
