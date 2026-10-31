@@ -1,7 +1,8 @@
 # Provisional lab values (VANTAGE_Lab_Design.md section 7). None is a customer figure:
 # a lab choice so the lab's own tests can run (R-REQ-10). Replace a value here, never with
 # a default in code. The generator reads `calibration:` and refuses a component without
-# its two keys.
+# its two keys; the run-setup writer reads `run_setup:` (both through
+# `lab_tools.setup_writer.load_provisional`, the one reader of this file).
 #
 # LAB_<C>_MAX_AGE_US  = 1000 * 2 * (largest period + jitter among the component's producers
 #                       + the component's own jitter), in ms: B = 2 * (50 + 5 + 4) = 118 ms.
@@ -23,3 +24,26 @@ calibration:
     E:
       LAB_E_MAX_AGE_US: {value: 62000, status: provisional}      # Y 25 + 3 + own jitter 3, twice
       LAB_E_RECOVERY_RUNS: {value: 2, status: provisional}
+
+# The run-setup values of section 7, one entry per key of ARCH section 2.3 that has a value to give.
+# Each carries `status: provisional`, and a written run setup lists every one of them in its
+# `.provisional.json` sidecar (a run setup has no room for a status).
+#   readiness_limit_steps  8   twice the four distinct event instants of `late_consumer`'s window
+#   fallback_max_gap       6   twice the gap of 3 that `missing_sample` drops
+#   buffer_depth           16  about three times the deepest look-back (B over X: (40 + 4) / 10)
+#   livemeas               MeasCycle 8 slots of 16384 bytes, MeasBulk 4 slots of 8192 bytes
+#   limits, coherence_verdict  not in section 7: the values the current emitter writes, so a setup
+#                          has every key it needs; a lab choice like the rest
+run_setup:
+  readiness_limit_steps: {value: 8, status: provisional}
+  fallback_max_gap: {value: 6, status: provisional}
+  buffer_depth: {value: 16, status: provisional}
+  livemeas:
+    cycle_slot_count: {value: 8, status: provisional}
+    cycle_slot_size: {value: 16384, status: provisional}
+    bulk_slot_count: {value: 4, status: provisional}
+    bulk_slot_size: {value: 8192, status: provisional}
+  limits:
+    exec_timeout_ms: {value: 250, status: provisional}
+    severity_exit: {value: error, status: provisional}
+  coherence_verdict: {value: unknown, status: provisional}

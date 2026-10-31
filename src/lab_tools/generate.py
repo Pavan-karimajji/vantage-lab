@@ -25,6 +25,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from lab_tools.setup_writer import ProvisionalError, load_provisional  # noqa: F401  (the one reader of provisional.yaml)
 from lab_tools.topology import IMAGE_KIND, ComponentDesc, Topology, TopologyError, load_topology
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "template"
@@ -83,17 +84,6 @@ def library_name(topology: str, component: str) -> str:
 
 
 # ---- the calibration file ---------------------------------------------------------------------
-
-def load_provisional(path: Path | str) -> dict[str, dict[str, dict[str, Any]]]:
-    """``catalogue/provisional.yaml``, ``calibration:`` part: topology -> component -> key -> entry."""
-    path = Path(path)
-    with path.open("r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-    calibration = raw.get("calibration")
-    if not isinstance(calibration, dict):
-        raise GenerateError(f"{path}: 'calibration' must be a mapping of topology -> component -> key")
-    return calibration
-
 
 def _provisional_value(provisional: Mapping[str, Any], topology: str, comp: str, key: str) -> int:
     entry = (((provisional.get(topology) or {}).get(comp)) or {}).get(key)
@@ -350,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         provisional = load_provisional(args.provisional or args.topology.parent / PROVISIONAL_FILE)
         generate_topology(topology, args.out, provisional, lab_dir=args.lab_dir,
                           library_prefix=args.library_prefix, library_suffix=args.library_suffix)
-    except (TopologyError, GenerateError) as exc:
+    except (TopologyError, GenerateError, ProvisionalError) as exc:
         print(f"lab_tools.generate: {exc}", file=sys.stderr)
         return 1
     return 0
