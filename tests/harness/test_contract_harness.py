@@ -2,7 +2,7 @@
 # Proprietary and Confidential.
 # COMPONENT: VANTAGE_LAB
 # @file tests/harness/test_contract_harness.py
-# @brief LAB-22: SYT-HDR-03, SYT-CTL-01, SYT-CTL-02, SYT-RSY-02, SYT-RSY-03, SYT-CST-06 on the running example's libraries.
+# @brief LAB-59, LAB-60, LAB-22: SYT-HDR-03, SYT-CTL-01, SYT-CTL-02, SYT-RSY-02, SYT-RSY-03, SYT-CST-06 on the running example's libraries.
 # @author Pavan Karimajji <Pavan.Karimajji@larsentoubro.com>
 """Contract tests of fixture ``F-HARN``. Each ``SYT`` case ``.cN`` is one test named
 ``test_SYT_<AREA>_<nn>_c<N>_...``; its docstring cites the ``SYS`` requirement whose ``Accept`` decides
@@ -228,3 +228,86 @@ def test_SYT_CST_06_c1_the_sticker_decides_and_the_producers_compstate_does_not(
     assert second.outputs["out"].sig_header.sig_status == SIG_INVALID
     assert second.outputs["compState"].state == second.outputs["compState"].ERROR
     assert "in_X" in second.outputs["compState"].reason
+
+
+# ---- LAB-59 / LAB-60: LAB_<C>_RENUMBER ------------------------------------------------------------
+
+A_INPUTS = ["in_X"]
+RENUMBER_KEY = "LAB_A_RENUMBER"
+
+
+def renumber_defects(results, controls, shift):
+    """Where a run's outputs break the rule of LAB-60: a data output not at the control's counter plus ``shift`` (modulo 2^32),
+    or ``refSync``/``compState`` not at the control's."""
+    bad = []
+    for i, (result, control) in enumerate(zip(results, controls)):
+        if result.outputs["out"].sig_header.measurement_counter != (control + shift) % UINT32:
+            bad.append((i, "out"))
+        for port in ("refSync", "compState"):
+            if result.outputs[port].sig_header.measurement_counter != control:
+                bad.append((i, port))
+    return bad
+
+
+def run_a(index_path, bundle, controls):
+    with LabHarness(index_path, "A", bundle=bundle) as harness:
+        results = []
+        for i, control_counter in enumerate(controls):
+            step = good_step(i, A_INPUTS)
+            step.control.counter = control_counter
+            results.append(harness.run(step))
+    assert all(r.ok for r in results)
+    return results
+
+
+def test_lab59_the_key_is_absent_in_the_built_bundle_and_absent_means_no_shift(index_path):
+    """Serves SYS-0001 (Accept: every data output carries its control's counter): the generator writes no LAB_A_RENUMBER, and a component without it does not shift."""
+    source = Path(load_index(index_path)["components"]["A"]["config"])
+    assert RENUMBER_KEY not in (source / "default.yaml").read_text(encoding="utf-8")
+    controls = [5, 6, 0xFFFFFFFF, 0]
+    assert renumber_defects(run_a(index_path, None, controls), controls, 0) == []
+
+
+def test_lab60_a_renumbering_component_shifts_its_data_outputs_and_keeps_refsync_and_compstate(index_path, tmp_path):
+    """Serves SYS-0001 (its FAIL side, by the component's own code): data outputs carry the control's counter + 1 modulo 2^32."""
+    source = Path(load_index(index_path)["components"]["A"]["config"])
+    bundle_variant(source, tmp_path / "shifted", set_values={RENUMBER_KEY: 1})
+    controls = [5, 6, 77, 0xFFFFFFFE, 0xFFFFFFFF, 0]
+    results = run_a(index_path, tmp_path / "shifted", controls)
+    assert renumber_defects(results, controls, 1) == []
+    assert [r.outputs["out"].sig_header.measurement_counter for r in results] == [6, 7, 78, 0xFFFFFFFF, 0, 1]
+    assert all(r.outputs["compState"].sig_header.cycle_counter == i + 1 for i, r in enumerate(results)), "only the counter moves"
+    plain = run_a(index_path, None, controls)
+    assert renumber_defects(plain, controls, 1) != [], "planted: a component that does not shift is found"
+    assert renumber_defects(results, controls, 0) != [], "planted: a shift where none was asked is found"
+
+
+def test_lab60_a_larger_shift_wraps_modulo_2_pow_32(index_path, tmp_path):
+    source = Path(load_index(index_path)["components"]["A"]["config"])
+    bundle_variant(source, tmp_path / "far", set_values={RENUMBER_KEY: 0xFFFFFFFF})
+    controls = [1, 2, 0xFFFFFFFF]
+    assert renumber_defects(run_a(index_path, tmp_path / "far", controls), controls, 0xFFFFFFFF) == []
+
+
+# ---- decision 3: a present but malformed LAB_<C>_START_COUNT / LAB_<C>_RENUMBER is malformed, not missing -----
+
+@pytest.mark.parametrize("key, value", [("LAB_A_START_COUNT", "abc"), ("LAB_A_START_COUNT", "4294967296"),
+                                        ("LAB_A_START_COUNT", "-1"), ("LAB_A_RENUMBER", "abc"),
+                                        ("LAB_A_RENUMBER", "4294967296"), ("LAB_A_RENUMBER", "")])
+def test_start_count_and_renumber_malformed_are_named_as_malformed(index_path, tmp_path, key, value):
+    source = Path(load_index(index_path)["components"]["A"]["config"])
+    bundle_variant(source, tmp_path / "bad", set_values={key: value})
+    with LabHarness(index_path, "A", bundle=tmp_path / "bad") as harness:
+        result = harness.run(good_step(0, A_INPUTS))
+    assert result.ok
+    state = result.outputs["compState"]
+    assert state.state == harness.factory.message_class("adas.df.CompState").State.Value("ERROR")
+    assert state.reason == f"calibration key {key} malformed", state.reason
+
+
+def test_a_missing_required_key_is_still_reported_as_missing(index_path, tmp_path):
+    source = Path(load_index(index_path)["components"]["A"]["config"])
+    bundle_variant(source, tmp_path / "gone", remove=["LAB_A_RECOVERY_RUNS"])
+    with LabHarness(index_path, "A", bundle=tmp_path / "gone") as harness:
+        state = harness.run(good_step(0, A_INPUTS)).outputs["compState"]
+    assert state.reason == "calibration key LAB_A_RECOVERY_RUNS missing"

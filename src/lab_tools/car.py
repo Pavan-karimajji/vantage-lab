@@ -18,7 +18,7 @@ triggered by an input starts, and logs its control, right after the sample that 
 (after the whole run, when a component's own output triggers it).
 
 A scenario may carry ``car:`` with the verbs ``restart``, ``silent``, ``invalid``, ``renumber`` and
-``counter_jump``, and ``recording:`` with ``drop_sample`` and ``drop_ref_sync`` (section 5.5); any other verb
+``counter_jump``, and ``recording:`` with ``drop_sample``, ``drop_ref_sync`` and ``repeat_sample`` (section 5.5); any other verb
 or key is refused. An ``image`` source's payload is ``adas.lab.LabImage``; its descriptor is built here
 from the signal header the libraries carry, because no library has a port of that type.
 """
@@ -45,7 +45,7 @@ HEADER_FILE = "common/signal_header.proto"
 SIG_OK = 1
 SIG_INVALID = 2
 CAR_VERBS = ("restart", "silent", "invalid", "renumber", "counter_jump")
-RECORDING_KEYS = ("drop_sample", "drop_ref_sync")
+RECORDING_KEYS = ("drop_sample", "drop_ref_sync", "repeat_sample")
 CONTROL_PORT = "control"
 OUTPUT_CAP = 4096
 
@@ -262,7 +262,7 @@ class CarScript:
 
 def parse_car_script(topology: Topology, scenario: Scenario) -> CarScript:
     """Read ``scenario.car`` (verbs ``restart``, ``silent``, ``invalid``, ``renumber``, ``counter_jump``) and
-    ``scenario.recording`` (``drop_sample``, ``drop_ref_sync``); anything else is a ``CarError``."""
+    ``scenario.recording`` (``drop_sample``, ``drop_ref_sync``, ``repeat_sample``); anything else is a ``CarError``."""
     where = f"scenario {scenario.name}"
     unknown = sorted(set(scenario.car) - set(CAR_VERBS))
     if unknown:
@@ -317,8 +317,8 @@ def parse_car_script(topology: Topology, scenario: Scenario) -> CarScript:
 
 
 def parse_recording_edits(topology: Topology, scenario: Scenario) -> RecordingEdits:
-    """Read ``scenario.recording``: ``drop_sample: [{port, counter}]`` (``port`` is ``source.<name>`` of a source of
-    the topology) and ``drop_ref_sync: all``."""
+    """Read ``scenario.recording``: ``drop_sample: [{port, counter}]`` and ``repeat_sample: [{port, counter}]``
+    (``port`` is ``source.<name>`` of a source of the topology) and ``drop_ref_sync: all``."""
     where = f"scenario {scenario.name}"
     recording = scenario.recording
     dropped: set[tuple[str, int]] = set()
@@ -333,10 +333,24 @@ def parse_recording_edits(topology: Topology, scenario: Scenario) -> RecordingEd
         if isinstance(counter, bool) or not isinstance(counter, int) or counter < 1:
             raise CarError(f"{where}: recording.drop_sample.counter must be an integer of at least 1, got {counter!r}")
         dropped.add((e["port"], counter))
+    repeated: set[tuple[str, int]] = set()  # LAB-62
+    raw = recording.get("repeat_sample", [])
+    if not isinstance(raw, list) or not all(isinstance(e, dict) and set(e) == {"port", "counter"} for e in raw):
+        raise CarError(f"{where}: recording.repeat_sample must be a list of mappings with exactly port, counter")
+    for e in raw:
+        producer, _, source = str(e["port"]).partition(".")
+        if producer != "source" or topology.source(source) is None:
+            raise CarError(f"{where}: recording.repeat_sample port {e['port']!r} must be source.<name> of a source of {topology.name}")
+        counter = e["counter"]
+        if isinstance(counter, bool) or not isinstance(counter, int) or counter < 1:
+            raise CarError(f"{where}: recording.repeat_sample.counter must be an integer of at least 1, got {counter!r}")
+        repeated.add((e["port"], counter))
+    if dropped & repeated:
+        raise CarError(f"{where}: recording.repeat_sample names a sample that drop_sample leaves out: {sorted(dropped & repeated)}")
     drop_ref_sync = recording.get("drop_ref_sync")
     if drop_ref_sync not in (None, "all"):
         raise CarError(f"{where}: recording.drop_ref_sync must be 'all', got {drop_ref_sync!r}")
-    return RecordingEdits(frozenset(dropped), drop_ref_sync == "all")
+    return RecordingEdits(frozenset(dropped), drop_ref_sync == "all", frozenset(repeated))
 
 
 def topic_class(topic: str) -> str:
@@ -512,6 +526,10 @@ class Car:
         path.parent.mkdir(parents=True, exist_ok=True)
         with McapRecorder(path, self.topics(), self.recording_manifest(), self.script.edits) as recorder:
             summary = self.run(recorder)
+            unmatched = sorted(self.script.edits.repeat_samples - recorder.repeated)
+            if unmatched:  # a repeat of a sample the car never made would silently be no edit at all
+                raise CarError(f"scenario {self.scenario.name}: recording.repeat_sample names {unmatched}, "
+                               "which the run never wrote")
         summary.file_size = path.stat().st_size
         return summary
 

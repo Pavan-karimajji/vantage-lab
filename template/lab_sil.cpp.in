@@ -131,6 +131,7 @@ struct Calibration {
   std::uint32_t hangAfterRuns = 0;
   std::uint32_t crashAfterRuns = 0;
   std::uint32_t startCount = 0;  // the own run count before the first run; absent means 0
+  std::uint32_t renumber = 0;    // LAB-59: added to each data output's measurement_counter; absent means 0
   std::string error;  // "calibration key <KEY> missing" once a key is missing or not an integer
 };
 
@@ -172,21 +173,32 @@ bool loadCalibration(const std::string& bundleDir, Calibration& calibration) {
   if (read(lab::kRecoveryKey, recovery)) calibration.recoveryRuns = static_cast<std::uint32_t>(recovery);
   if (read(lab::kHangKey, hang)) calibration.hangAfterRuns = static_cast<std::uint32_t>(hang);
   if (read(lab::kCrashKey, crash)) calibration.crashAfterRuns = static_cast<std::uint32_t>(crash);
-  const auto start = keys.find(lab::kStartCountKey);  // optional: absent is 0, present must be a uint32
-  if (start != keys.end()) {
-    std::uint64_t value = 0;
-    if (read(lab::kStartCountKey, value) && value <= 0xFFFFFFFFULL) {
-      calibration.startCount = static_cast<std::uint32_t>(value);
-    } else if (calibration.error.empty()) {
-      calibration.error = std::string("calibration key ") + lab::kStartCountKey + " missing";
+  // Optional keys: absent is 0 and never an error; present must be a uint32, else the key is named as malformed.
+  auto readOptional = [&](const char* key, std::uint32_t& value) {
+    const auto it = keys.find(key);
+    if (it == keys.end()) return;
+    std::uint64_t wide = 0;
+    bool ok = !it->second.empty() && it->second.find_first_not_of("0123456789") == std::string::npos;
+    if (ok) {
+      errno = 0;
+      wide = std::strtoull(it->second.c_str(), nullptr, 10);
+      ok = errno == 0 && wide <= 0xFFFFFFFFULL;
     }
-  }
+    if (ok) {
+      value = static_cast<std::uint32_t>(wide);
+    } else if (calibration.error.empty()) {
+      calibration.error = std::string("calibration key ") + key + " malformed";
+    }
+  };
+  readOptional(lab::kStartCountKey, calibration.startCount);
+  readOptional(lab::kRenumberKey, calibration.renumber);
   return true;
 }
 
 struct Handle {
   explicit Handle(Calibration c)
-      : calibration(std::move(c)), component(calibration.maxAgeUs, calibration.recoveryRuns, calibration.error, calibration.startCount) {}
+      : calibration(std::move(c)), component(calibration.maxAgeUs, calibration.recoveryRuns, calibration.error, calibration.startCount,
+                  calibration.renumber) {}
 
   Calibration calibration;
   LabComponent component;

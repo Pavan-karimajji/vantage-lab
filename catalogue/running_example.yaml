@@ -61,3 +61,7 @@ scenarios:
   - name: counter_jump
     car: {counter_jump: [{source: X, at_counter: 50, by: 1000}]}
     resim: [{name: all_simulated}]
+  - name: renumber_lib
+    expect: diverges
+    resim:
+      - {name: shifted, config: {A: {set: {LAB_A_RENUMBER: 1}}}}    # A's own code shifts its data outputs' counter

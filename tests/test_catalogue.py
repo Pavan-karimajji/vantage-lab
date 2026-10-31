@@ -2,7 +2,7 @@
 # Proprietary and Confidential.
 # COMPONENT: VANTAGE_LAB
 # @file tests/test_catalogue.py
-# @brief LAB-40: SYT-RSY-04 on every catalogue file and resim case present, with the reference re-run (LAB-39), equal_outputs (LAB-38) and the run setups (LAB-36, LAB-37).
+# @brief LAB-58, LAB-40: SYT-RSY-04 on every catalogue file and resim case present, with the reference re-run (LAB-39), equal_outputs (LAB-38) and the run setups (LAB-36, LAB-37).
 # @author Pavan Karimajji <Pavan.Karimajji@larsentoubro.com>
 """Contract test of fixture ``F-CATALOGUE`` (design section 6.3): for every file in ``catalogue/`` and every resim case of
 every scenario, the car's recording is re-run through the reference re-run (``lab_tools.reference``, no Vantage) by its
@@ -344,6 +344,47 @@ def test_lab37_one_file_one_reader():
     assert "calibration" in setup_writer.PROVISIONAL_PARTS
     calibration = load_provisional(PROVISIONAL)
     assert calibration["running_example"]["B"]["LAB_B_MAX_AGE_US"]["status"] == "provisional"
+
+
+def derived_max_age_us(topology, name):
+    """Section 7: twice the largest ``period + jitter`` among the component's producers plus its own jitter, in us."""
+    comp = topology.component(name)
+    def period_and_jitter(producer):
+        found = topology.source(producer) or topology.component(producer)
+        return found.period_ms + found.jitter_ms
+    return 1000 * 2 * (max(period_and_jitter(i.producer) for i in comp.inputs) + comp.jitter_ms)
+
+
+def provisional_defects(topology, calibration):
+    """Why the provisional values of ``topology`` are not those of section 7: a key missing, not marked provisional, or off the rule."""
+    bad = []
+    for comp in topology.components:
+        entries = (calibration.get(topology.name) or {}).get(comp.name) or {}
+        for key, expected in ((f"LAB_{comp.name}_MAX_AGE_US", derived_max_age_us(topology, comp.name)),
+                              (f"LAB_{comp.name}_RECOVERY_RUNS", 2)):
+            entry = entries.get(key)
+            if entry is None or entry.get("status") != "provisional":
+                bad.append((comp.name, key, "missing or not provisional"))
+            elif entry["value"] != expected:
+                bad.append((comp.name, key, entry["value"], expected))
+    return bad
+
+
+def test_lab58_coprime_periods_values_follow_the_rule_of_section_7_and_are_provisional():
+    topology = load_topology(CATALOGUE / "coprime_periods.yaml")
+    calibration = load_provisional(PROVISIONAL)
+    assert provisional_defects(topology, calibration) == []
+    assert calibration["coprime_periods"]["A"]["LAB_A_MAX_AGE_US"]["value"] == 14000
+    assert calibration["coprime_periods"]["B"]["LAB_B_MAX_AGE_US"]["value"] == 22000
+
+
+def test_lab58_planted_a_wrong_or_unmarked_value_is_found():
+    topology = load_topology(CATALOGUE / "coprime_periods.yaml")
+    calibration = copy.deepcopy(load_provisional(PROVISIONAL))
+    calibration["coprime_periods"]["B"]["LAB_B_MAX_AGE_US"]["value"] = 26000
+    del calibration["coprime_periods"]["A"]["LAB_A_RECOVERY_RUNS"]["status"]
+    assert provisional_defects(topology, calibration) == [("A", "LAB_A_RECOVERY_RUNS", "missing or not provisional"),
+                                                          ("B", "LAB_B_MAX_AGE_US", 26000, 22000)]
 
 
 def test_lab37_planted_unmarked_or_missing_values_are_refused(tmp_path):

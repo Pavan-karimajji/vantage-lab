@@ -66,6 +66,11 @@ def start_count_key(component: str) -> str:
     return calibration_key(component, "START_COUNT")
 
 
+def renumber_key(component: str) -> str:
+    """Added to every data output's ``measurement_counter`` (LAB-59); absent means 0, so ``default.yaml`` never has it."""
+    return calibration_key(component, "RENUMBER")
+
+
 def input_port_names(comp: ComponentDesc) -> list[str]:
     """Manifest data inputs, in declared order (the only order, RCT:IMP-0028)."""
     return [i.name for i in comp.inputs]
@@ -250,6 +255,7 @@ constexpr const char* kRecoveryKey = "{recovery_key}";
 constexpr const char* kHangKey = "{hang_key}";
 constexpr const char* kCrashKey = "{crash_key}";
 constexpr const char* kStartCountKey = "{start_count_key(comp.name)}";
+constexpr const char* kRenumberKey = "{renumber_key(comp.name)}";
 
 }}  // namespace lab
 """

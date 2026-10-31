@@ -2,7 +2,7 @@
 # Proprietary and Confidential.
 # COMPONENT: VANTAGE_LAB
 # @file tests/test_car_topologies.py
-# @brief LAB-41..LAB-48: the car on the other catalogue topologies -- input-triggered starts, previous_cycle, a late consumer, rates with no common grid, one producer with two consumers, a join, a measured middle.
+# @brief LAB-41..LAB-48, LAB-57, LAB-63: the car on the other catalogue topologies -- input-triggered starts, previous_cycle, a late consumer, rates with no common grid, one producer with two consumers, a join, a measured middle.
 # @author Pavan Karimajji <Pavan.Karimajji@larsentoubro.com>
 """Each topology of ``catalogue/`` after ``running_example`` makes one corner case (design section 6.1); this
 file shows in the car's recording that the case happened. The tests read counters, logging times and ``refSync``
@@ -29,7 +29,7 @@ from test_car_running_example import read_recording  # noqa: E402
 
 CATALOGUE = LAB_ROOT / "catalogue"
 TOPOLOGIES = ["fan_out", "diamond", "rates_not_multiple", "feedback", "measured_middle", "late_consumer",
-              "data_triggered"]
+              "data_triggered", "coprime_periods"]
 
 
 def index_for(name):
@@ -300,3 +300,121 @@ def test_lab48_the_car_does_not_run_a_file_that_expects_refusal():
     assert topology.refused_at_load
     with pytest.raises(CarError, match="expects refusal at load"):
         Car(topology, topology.scenarios[0], index_for("loop_no_edge"))
+
+
+# ---- LAB-57 coprime_periods ---------------------------------------------------------------------------------------------
+def shared_grid(periods):
+    """The largest whole-ms step every period is a multiple of (their greatest common divisor)."""
+    from math import gcd
+    from functools import reduce
+    return reduce(gcd, periods)
+
+
+def coprime_defects(topology, messages):
+    """Why ``coprime_periods`` is not the case: a pair of periods sharing a divisor above 1 ms, a stage whose controls are not at
+    its own period, or a stage that read an input at a fixed step instead of the newest one."""
+    from math import gcd
+    bad = []
+    periods = {s.name: s.period_ms for s in topology.sources} | {c.name: c.period_ms for c in topology.components}
+    names = sorted(periods)
+    bad += [("shared divisor", a, b) for i, a in enumerate(names) for b in names[i + 1:] if gcd(periods[a], periods[b]) > 1]
+    for comp in topology.components:
+        times = [t for t, _ in stream(messages, f"{comp.name}.control")]
+        if times != [comp.period_ms * 1000 * k for k in range(1, topology.duration_ms // comp.period_ms + 1)]:
+            bad.append(("not at its own period", comp.name))
+    return bad
+
+
+def test_lab57_every_stage_runs_on_its_own_period_with_no_common_divisor(run):
+    topology, _, _, messages = run("coprime_periods")
+    assert {s.name: s.period_ms for s in topology.sources} == {"X": 7}
+    assert {c.name: c.period_ms for c in topology.components} == {"A": 11, "B": 13}
+    assert all(s.jitter_ms == 0 for s in topology.sources) and all(c.jitter_ms == 0 for c in topology.components), "no jitter"
+    assert [(i.producer) for i in topology.component("A").inputs] == ["X"]
+    assert [(i.producer) for i in topology.component("B").inputs] == ["A", "X"]
+    assert shared_grid([7, 11, 13]) == 1
+    assert coprime_defects(topology, messages) == []
+    # B (13 ms) reads A (11 ms) and X (7 ms) as the newest sample at its own start: the steps between reads are not constant.
+    reads_a, reads_x = read_counters(messages, "B", "in_A"), read_counters(messages, "B", "in_X")
+    assert len({b - a for a, b in zip(reads_a, reads_a[1:])}) > 1 or len({b - a for a, b in zip(reads_x, reads_x[1:])}) > 1
+    assert reads_x[:3] == [1, 3, 5], "X samples at 7, 14, ... ms: B at 13, 26, 39 ms reads 1, 3, 5"
+    assert reads_a[:3] == [1, 2, 3], "A runs at 11, 22, 33 ms: B at 13, 26, 39 ms reads 1, 2, 3"
+
+
+def test_lab57_the_resim_cases_are_cut_a_and_all_simulated():
+    topology = load_topology(CATALOGUE / "coprime_periods.yaml")
+    (base,) = topology.scenarios
+    assert [c["name"] for c in base.resim] == ["cut_a", "all_simulated"]
+    assert base.resim[0]["measured"] == ["A"] and not base.resim[1].get("measured")
+
+
+def test_lab57_planted_periods_on_one_grid_are_found(run):
+    import dataclasses
+    topology, _, _, messages = run("coprime_periods")
+    on_grid = dataclasses.replace(topology, components=tuple(
+        dataclasses.replace(c, period_ms=c.period_ms + 1 if c.name == "A" else c.period_ms) for c in topology.components))
+    assert coprime_defects(on_grid, messages) == [("not at its own period", "A")], "A declared at 12 ms, recorded at 11"
+    same = dataclasses.replace(topology, components=tuple(
+        dataclasses.replace(c, period_ms=14) if c.name == "A" else c for c in topology.components))
+    assert ("shared divisor", "A", "X") in coprime_defects(same, messages)
+
+
+# ---- LAB-63 repeat_trigger --------------------------------------------------------------------------------------------------
+def repeat_defects(messages, port, counter_value, controls_of):
+    """Why a recording is not ``repeat_trigger``: the sample of ``counter_value`` on ``port`` is not written twice with the same
+    bytes 1 ms apart, or ``controls_of`` (the triggered stage) has a control that is not one per distinct counter."""
+    bad = []
+    copies = [(t, m) for t, m in stream(messages, port) if counter(m) == counter_value]
+    if len(copies) != 2:
+        bad.append(("copies", len(copies)))
+    else:
+        (t1, m1), (t2, m2) = copies
+        if m1.SerializeToString(deterministic=True) != m2.SerializeToString(deterministic=True):
+            bad.append("not byte-identical")
+        if t2 - t1 != 1000:
+            bad.append(("not 1 ms later", t2 - t1))
+    distinct = {counter(m) for _, m in stream(messages, port)}
+    if len(stream(messages, f"{controls_of}.control")) != len(distinct):
+        bad.append(("controls", len(stream(messages, f"{controls_of}.control")), len(distinct)))
+    return bad
+
+
+@pytest.fixture(scope="module")
+def repeat_run(run, tmp_path_factory):
+    topology, index, _, _ = run("data_triggered")
+    scenario = next(s for s in topology.scenarios if s.name == "repeat_trigger")
+    out = tmp_path_factory.mktemp("repeat_trigger") / "repeat_trigger.mcap"
+    with Car(topology, scenario, index) as car:
+        car.record(out)
+    return topology, scenario, out, read_recording(out)
+
+
+def test_lab63_the_recording_holds_the_repeated_x_sample_twice_and_t_runs_once_for_it(run, repeat_run):
+    _, _, _, base = run("data_triggered")
+    topology, scenario, path, messages = repeat_run
+    assert scenario.recording == {"repeat_sample": [{"port": "source.X", "counter": 10}]} and scenario.expect == "exact"
+    assert [c["name"] for c in scenario.resim] == ["by_data"] and scenario.resim[0]["trigger"] == {"T": "in_X"}
+    assert repeat_defects(messages, "source.X", 10, "T") == []
+    assert len(stream(messages, "source.X")) == len(stream(base, "source.X")) + 1
+    assert len(stream(messages, "T.control")) == len(stream(base, "T.control")) == 66, "the repeat starts no run"
+    first = next(t for t, m in stream(messages, "source.X") if counter(m) == 10)
+    assert first == 300_000 and not [t for t, _ in stream(messages, "T.control") if t == first + 1000]
+    others = [(t, m.SerializeToString(deterministic=True)) for t, m in stream(messages, "source.X") if counter(m) != 10]
+    assert others == [(t, m.SerializeToString(deterministic=True)) for t, m in stream(base, "source.X") if counter(m) != 10]
+    for topic in ("T.control", "T.out", "T.refSync", "T.compState", "source.Y"):
+        assert [(t, m.SerializeToString(deterministic=True)) for t, m in stream(messages, topic)] == \
+            [(t, m.SerializeToString(deterministic=True)) for t, m in stream(base, topic)], topic
+    assert trigger_defects([x for x in messages if not (x[0] == "source.X" and x[1] == first + 1000)]) == []
+    from mcap.reader import make_reader
+    with open(path, "rb") as f:
+        manifest = next(dict(m.metadata) for m in make_reader(f).iter_metadata() if m.name == "manifest")
+    import yaml
+    assert yaml.safe_load(manifest["yaml"])["recording_edits"] == {"repeat_sample": [{"port": "source.X", "counter": 10}]}, "the manifest states the edit"
+
+
+def test_lab63_planted_a_recording_without_the_repeat_or_with_an_extra_run_is_found(run, repeat_run):
+    _, _, _, base = run("data_triggered")
+    _, _, _, messages = repeat_run
+    assert repeat_defects(base, "source.X", 10, "T") == [("copies", 1)]
+    extra = list(messages) + [next(x for x in messages if x[0] == "T.control")]
+    assert ("controls", 67, 66) in repeat_defects(extra, "source.X", 10, "T")

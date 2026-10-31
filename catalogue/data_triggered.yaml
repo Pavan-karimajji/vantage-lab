@@ -15,3 +15,6 @@ scenarios:
     expect: diverges
     car: {counter_jump: [{source: X, at_counter: 10, by: 1000}], renumber: [T]}
     resim: [{name: by_data, trigger: {T: in_X}}]
+  - name: repeat_trigger
+    recording: {repeat_sample: [{port: source.X, counter: 10}]}
+    resim: [{name: by_data, trigger: {T: in_X}}]

@@ -46,11 +46,14 @@ class LabComponent {
   using CycleControl = adas::common::CycleControl;
 
   /// `startCount` is the own run count before the first run (calibration key `kStartCountKey`).
+  /// `renumber` is added to each data output's measurement_counter modulo 2^32 (key `kRenumberKey`, LAB-60):
+  /// a break of the counter identity by the component's own code, for the drill only; 0 is the contract.
   LabComponent(std::int64_t maxAgeUs, std::uint32_t recoveryRuns, std::string calibrationError,
-               std::uint32_t startCount = 0)
+               std::uint32_t startCount = 0, std::uint32_t renumber = 0)
       : maxAgeUs_(maxAgeUs),
         recoveryRuns_(recoveryRuns),
         calibrationError_(std::move(calibrationError)),
+        renumber_(renumber),
         cycle_(startCount) {}
 
   void exec(const CycleControl& control, const Inputs& in, Outputs& out) {
@@ -151,12 +154,16 @@ class LabComponent {
   }
 
   /// The only exit of exec: every data output, the refSync and the compState (IMP-0022).
-  static void publish(const Verdict& v, const adas::common::CycleStamp& cycle, const adas::common::RefSync& refSync,
-                      Outputs& out) {
+  void publish(const Verdict& v, const adas::common::CycleStamp& cycle, const adas::common::RefSync& refSync,
+               Outputs& out) const {
     for (std::size_t k = 0; k < kOutputCount; ++k) {
       adas::lab::LabSample* sample = out.data[k];
       sample->Clear();
       cycle.stamp(v.sticker, sample->mutable_sig_header());
+      if (renumber_ != 0) {  // LAB-60: data outputs only; refSync and compState keep the control's counter
+        adas::common::SignalHeader* header = sample->mutable_sig_header();
+        header->set_measurement_counter(header->measurement_counter() + renumber_);  // uint32 wraps modulo 2^32
+      }
       if (v.sticker == adas::common::kSigStatusOk) sample->set_value(v.value + static_cast<std::uint64_t>(k));
     }
     out.refSync->CopyFrom(refSync);
@@ -172,6 +179,7 @@ class LabComponent {
   std::int64_t maxAgeUs_ = 0;
   std::uint32_t recoveryRuns_ = 0;
   std::string calibrationError_;
+  std::uint32_t renumber_ = 0;
   adas::common::CycleStamp cycle_;
   adas::common::RefSyncBuilder refSync_{inputNames()};
   State state_;

@@ -2,7 +2,7 @@
 # Proprietary and Confidential.
 # COMPONENT: VANTAGE_LAB
 # @file tests/test_car_drills.py
-# @brief LAB-49..LAB-52: the camera recording with its big frame, the renumber and counter_jump verbs, the recording edits drop_sample and drop_ref_sync, and the drill scenarios of the running example.
+# @brief LAB-49..LAB-52, LAB-61, LAB-62: the camera recording with its big frame, the renumber and counter_jump verbs, the recording edits drop_sample and drop_ref_sync, and the drill scenarios of the running example.
 # @author Pavan Karimajji <Pavan.Karimajji@larsentoubro.com>
 """Tests of the drills (``G4``; design sections 5.4, 5.5, 6.2, 6.3 ``F-CAM``): each drill's effect is in the
 recording the fake car writes. The recordings are read back through the schemas they embed (R-SIM-11). Where
@@ -327,12 +327,13 @@ def test_lab51_recording_keys_are_checked(topology):
 # ---- LAB-52: the drill scenarios -----------------------------------------------------------------------------------------------
 def test_lab52_the_running_example_has_the_drills_of_section_6_2(topology):
     assert [s.name for s in topology.scenarios] == ["base", "restart", "fault", "missing_sample", "missing_run",
-                                                    "no_ref_sync", "counter_jump"]
+                                                    "no_ref_sync", "counter_jump", "renumber_lib"]
     assert [c["name"] for c in scenario_of(topology, "base").resim] == ["cut_c", "all_simulated", "jump", "hang", "crash"]
-    assert {s.name: s.expect for s in topology.scenarios if s.expect != "exact"} == {"no_ref_sync": "diverges"}
+    assert {s.name: s.expect for s in topology.scenarios if s.expect != "exact"} == {"no_ref_sync": "diverges",
+                                                                                      "renumber_lib": "diverges"}
     dropped = lambda name: sorted(c for _, c in parse_car_script(topology, scenario_of(topology, name)).edits.drop_samples)
     assert dropped("missing_sample") == [20, 21, 22] and dropped("missing_run") == list(range(30, 40))
-    assert all(s.resim == ({"name": "all_simulated"},) for s in topology.scenarios[3:])
+    assert all(s.resim == ({"name": "all_simulated"},) for s in topology.scenarios[3:-1])
     assert len(dropped("missing_sample")) <= fallback_max_gap() < len(dropped("missing_run")), "both sides of the limit exist"
 
 
@@ -414,3 +415,88 @@ def test_lab52_hang_and_crash_cases_carry_the_key_in_a_bundle_variant(index_path
     assert all(stages[n]["config_bundle_sha256"] == ordinary[n]["config_bundle_sha256"] for n in "ACDE")
     own = Path(index["components"]["B"]["config"]) / "default.yaml"
     assert f"{key}: 0" in own.read_text(encoding="utf-8").splitlines(), "the bundle beside the library is never written"
+
+
+# ---- LAB-61: renumber_lib / shifted -----------------------------------------------------------------------------------------
+def test_lab61_renumber_lib_is_a_case_not_a_car_verb(topology, tmp_path):
+    """Serves SYS-0013: ``A``'s own code shifts, so the scenario has no ``car:`` block and the case sets ``LAB_A_RENUMBER`` in A's bundle."""
+    drill = scenario_of(topology, "renumber_lib")
+    assert drill.expect == "diverges" and drill.car == {} and drill.recording == {}
+    assert [c["name"] for c in drill.resim] == ["shifted"]
+    assert case_of(drill, "shifted")["config"] == {"A": {"set": {"LAB_A_RENUMBER": 1}}}
+    assert parse_car_script(topology, drill).edits == RecordingEdits() and not parse_car_script(topology, drill).renumber
+
+
+def test_lab61_the_run_setup_of_shifted_points_at_a_bundle_with_the_key(index_path, topology, tmp_path_factory, base_path):
+    drill = scenario_of(topology, "renumber_lib")
+    out = tmp_path_factory.mktemp("renumber_lib")
+    path = write_run_setup(topology, drill, case_of(drill, "shifted"), recording=base_path, index=load_index(index_path),
+                           out_dir=out, run_setup_values=provisional_values(load_provisional(PROVISIONAL, "run_setup")))
+    stages = {s["name"]: s for s in json.loads(path.read_text(encoding="utf-8"))["stages"]}
+    folder = out / "renumber_lib.shifted.bundles" / "A"
+    assert "LAB_A_RENUMBER: 1" in (folder / "default.yaml").read_text(encoding="utf-8").splitlines()
+    assert stages["A"]["config_bundle_sha256"] == bundle_sha256(folder)
+    built = Path(load_index(index_path)["components"]["B"]["config"])
+    assert stages["B"]["config_bundle_sha256"] == bundle_sha256(built), "the other stages keep the built bundle"
+
+
+# ---- LAB-62: the recording verb repeat_sample --------------------------------------------------------------------------------
+def test_lab62_apply_recording_edits_repeats_only_what_the_edit_names():
+    edits = RecordingEdits(frozenset({("source.Y", 20)}), False, frozenset({("source.X", 10)}))
+    assert apply_recording_edits(edits, "source.X", 10) == 2
+    assert apply_recording_edits(edits, "source.X", 11) == 1 and apply_recording_edits(edits, "source.Y", 10) == 1
+    assert apply_recording_edits(edits, "A.out", 10) == 1 and apply_recording_edits(edits, "source.X") == 1
+    assert apply_recording_edits(edits, "source.Y", 20) == 0
+    assert edits.as_manifest() == {"drop_sample": [{"port": "source.Y", "counter": 20}],
+                                   "repeat_sample": [{"port": "source.X", "counter": 10}]}
+    assert RecordingEdits(repeat_samples=frozenset({("source.X", 1)})) and not RecordingEdits()
+
+
+def test_lab62_the_recorder_writes_the_repeat_byte_identical_one_ms_later_and_in_time_order(tmp_path, index_path):
+    use_writer(load_index(index_path)["interfaces_python"])
+    topics = {"source.X": TopicSpec("x.X", b"d", "mocked"), "A.out": TopicSpec("x.O", b"d", "simulated")}
+    manifest = {"scenario": "t", "source_kind": "synthetic", "run_kind": "sim", "components": []}
+    path = tmp_path / "repeat.mcap"
+    with McapRecorder(path, topics, manifest, RecordingEdits(repeat_samples=frozenset({("source.X", 2)}))) as recorder:
+        recorder.write("source.X", 1_000, b"one", 1)
+        recorder.write("source.X", 2_000, b"two", 2)
+        recorder.write("A.out", 2_500, b"mid")             # between the original and its repeat
+        recorder.write("A.out", 3_000, b"late")            # after the repeat is due
+        recorder.write("source.X", 4_000, b"three", 3)
+        counts = recorder.counts
+        assert recorder.repeated == {("source.X", 2)}
+    assert counts == {"source.X": 4, "A.out": 2}
+    with open(path, "rb") as f:
+        written = [(c.topic, m.log_time // 1000, m.data) for _, c, m in make_reader(f).iter_messages()]
+    assert written == [("source.X", 1000, b"one"), ("source.X", 2000, b"two"), ("A.out", 2500, b"mid"),
+                       ("source.X", 3000, b"two"), ("A.out", 3000, b"late"), ("source.X", 4000, b"three")]
+
+
+def test_lab62_a_repeat_with_nothing_after_it_is_still_written_at_close(tmp_path, index_path):
+    use_writer(load_index(index_path)["interfaces_python"])
+    topics = {"source.X": TopicSpec("x.X", b"d", "mocked")}
+    manifest = {"scenario": "t", "source_kind": "synthetic", "run_kind": "sim", "components": []}
+    with McapRecorder(tmp_path / "last.mcap", topics, manifest, RecordingEdits(repeat_samples=frozenset({("source.X", 1)}))) as recorder:
+        recorder.write("source.X", 500, b"only", 1)
+    with open(tmp_path / "last.mcap", "rb") as f:
+        assert [(m.log_time // 1000, m.data) for _, _, m in make_reader(f).iter_messages()] == [(500, b"only"), (1500, b"only")]
+
+
+def test_lab62_repeat_sample_is_checked(topology, index_path, tmp_path):
+    base = scenario_of(topology, "base")
+
+    def refused(match, recording):
+        with pytest.raises(CarError, match=match):
+            parse_car_script(topology, dataclasses.replace(base, recording=recording))
+
+    refused("must be source.<name>", {"repeat_sample": [{"port": "A.out", "counter": 3}]})
+    refused("must be source.<name>", {"repeat_sample": [{"port": "source.Q", "counter": 3}]})
+    refused("exactly port, counter", {"repeat_sample": [{"port": "source.Y"}]})
+    refused("repeat_sample.counter must be an integer of at least 1", {"repeat_sample": [{"port": "source.Y", "counter": 0}]})
+    refused("drop_sample leaves out", {"drop_sample": [{"port": "source.Y", "counter": 7}],
+                                       "repeat_sample": [{"port": "source.Y", "counter": 7}]})
+    script = parse_car_script(topology, dataclasses.replace(base, recording={"repeat_sample": [{"port": "source.Y", "counter": 7}]}))
+    assert script.edits == RecordingEdits(repeat_samples=frozenset({("source.Y", 7)}))
+    never = dataclasses.replace(base, recording={"repeat_sample": [{"port": "source.Y", "counter": 99999}]})
+    with Car(topology, never, index_path) as car, pytest.raises(CarError, match="never wrote"):
+        car.record(tmp_path / "never.mcap")

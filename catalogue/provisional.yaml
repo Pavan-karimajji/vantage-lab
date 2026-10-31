@@ -57,6 +57,13 @@ calibration:
     C:
       LAB_C_MAX_AGE_US: {value: 60000, status: provisional}      # B 30 + own jitter 0, twice
       LAB_C_RECOVERY_RUNS: {value: 2, status: provisional}
+  coprime_periods:
+    A:
+      LAB_A_MAX_AGE_US: {value: 14000, status: provisional}      # X 7 + own jitter 0, twice
+      LAB_A_RECOVERY_RUNS: {value: 2, status: provisional}
+    B:
+      LAB_B_MAX_AGE_US: {value: 22000, status: provisional}      # A 11 + own jitter 0, twice
+      LAB_B_RECOVERY_RUNS: {value: 2, status: provisional}
   feedback:
     A:
       LAB_A_MAX_AGE_US: {value: 40000, status: provisional}      # B 20 + own jitter 0, twice
