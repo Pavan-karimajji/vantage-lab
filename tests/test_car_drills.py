@@ -327,7 +327,7 @@ def test_lab51_recording_keys_are_checked(topology):
 # ---- LAB-52: the drill scenarios -----------------------------------------------------------------------------------------------
 def test_lab52_the_running_example_has_the_drills_of_section_6_2(topology):
     assert [s.name for s in topology.scenarios] == ["base", "restart", "fault", "missing_sample", "missing_run",
-                                                    "no_ref_sync", "counter_jump", "renumber_lib"]
+                                                    "no_ref_sync", "counter_jump", "counter_wrap", "renumber_lib"]
     assert [c["name"] for c in scenario_of(topology, "base").resim] == ["cut_c", "all_simulated", "jump", "hang", "crash"]
     assert {s.name: s.expect for s in topology.scenarios if s.expect != "exact"} == {"no_ref_sync": "diverges",
                                                                                       "renumber_lib": "diverges"}

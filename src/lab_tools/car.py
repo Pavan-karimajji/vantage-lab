@@ -2,7 +2,7 @@
 # Proprietary and Confidential.
 # COMPONENT: VANTAGE_LAB
 # @file src/lab_tools/car.py
-# @brief LAB-23..LAB-28, LAB-31, LAB-32, LAB-49, LAB-50: the fake car -- task clocks, sample and image sources, bus, event loop, control writer, restart, source-fault, renumber and counter-jump scripts (VANTAGE_Lab_Design.md section 5).
+# @brief LAB-23..LAB-28, LAB-31, LAB-32, LAB-49, LAB-50, LAB-64, LAB-65: the fake car -- task clocks, sample and image sources, bus, event loop, control writer, restart, source-fault, renumber, counter-jump and counter-start scripts, the counter wrap (VANTAGE_Lab_Design.md section 5).
 # @author Pavan Karimajji <Pavan.Karimajji@larsentoubro.com>
 """The fake car runs a topology's generated libraries through the generic ABI on their own task
 clocks and records every port. It is the independent check Vantage is compared with, so it shares no
@@ -17,8 +17,8 @@ the order: source samples, activations, starts; within a class in declaration or
 triggered by an input starts, and logs its control, right after the sample that triggers it is logged
 (after the whole run, when a component's own output triggers it).
 
-A scenario may carry ``car:`` with the verbs ``restart``, ``silent``, ``invalid``, ``renumber`` and
-``counter_jump``, and ``recording:`` with ``drop_sample``, ``drop_ref_sync`` and ``repeat_sample`` (section 5.5); any other verb
+A scenario may carry ``car:`` with the verbs ``restart``, ``silent``, ``invalid``, ``renumber``,
+``counter_jump`` and ``counter_start``, and ``recording:`` with ``drop_sample``, ``drop_ref_sync`` and ``repeat_sample`` (section 5.5); any other verb
 or key is refused. An ``image`` source's payload is ``adas.lab.LabImage``; its descriptor is built here
 from the signal header the libraries carry, because no library has a port of that type.
 """
@@ -44,7 +44,8 @@ IMAGE_FILE = "lab/lab_image.proto"
 HEADER_FILE = "common/signal_header.proto"
 SIG_OK = 1
 SIG_INVALID = 2
-CAR_VERBS = ("restart", "silent", "invalid", "renumber", "counter_jump")
+CAR_VERBS = ("restart", "silent", "invalid", "renumber", "counter_jump", "counter_start")
+MAX_COUNTER = 0xFFFFFFFF
 RECORDING_KEYS = ("drop_sample", "drop_ref_sync", "repeat_sample")
 CONTROL_PORT = "control"
 OUTPUT_CAP = 4096
@@ -135,6 +136,12 @@ class Task:
             k += 1
 
 
+def wrap_counter(n: int) -> int:
+    """LAB-64: a ``measurement_counter`` runs 1 to ``0xFFFFFFFF`` and then 1 again, never 0 (``RCT:SYS-0004``,
+    ``D24``); 0 means unknown."""
+    return ((n - 1) % MAX_COUNTER) + 1
+
+
 class SourceTask(Task):
     """A source: each new sample gets the previous counter plus 1 (the first is 1) and the non-zero nominal
     time; ``value`` is the counter; ``cycle_counter`` equals the counter (LAB-24). A sample whose nominal time
@@ -144,12 +151,14 @@ class SourceTask(Task):
     An ``image`` source (LAB-49) makes ``adas.lab.LabImage`` with ``pixels[i] = (counter + i) mod 256``,
     ``width * height`` of them, except the sample whose counter is ``big_frame.at_counter``: that one has
     ``big_frame.bytes`` pixels. ``counter_jump`` (LAB-50) is a list of ``(at_counter, by)``: from the sample
-    that would have counter ``at_counter`` on, every counter is ``by`` higher (jumps add up). ``factory``
+    that would have counter ``at_counter`` on, every counter is ``by`` higher (jumps add up). ``counter_start``
+    (LAB-65) is the first sample's counter, 1 when absent; every counter goes through ``wrap_counter`` (LAB-64),
+    ``cycle_counter`` staying equal to it. ``factory``
     holds ``adas.lab.LabSample`` for a sample source and ``adas.lab.LabImage`` for an image source."""
 
     def __init__(self, desc: SourceDesc, seed: int, factory: MessageFactory,
                  silent: tuple[tuple[int, int], ...] = (), invalid: tuple[tuple[int, int], ...] = (),
-                 counter_jump: tuple[tuple[int, int], ...] = ()):
+                 counter_jump: tuple[tuple[int, int], ...] = (), counter_start: int = 1):
         super().__init__(desc.name, desc.period_ms * 1000, desc.phase_ms * 1000, desc.jitter_ms * 1000, seed)
         self.desc = desc
         self._factory = factory
@@ -158,6 +167,7 @@ class SourceTask(Task):
         self._silent = silent
         self._invalid = invalid
         self._jumps = counter_jump
+        self._start = counter_start
 
     def is_silent(self, nominal_us: int) -> bool:
         return any(a <= nominal_us < b for a, b in self._silent)
@@ -174,7 +184,7 @@ class SourceTask(Task):
 
     def next_sample(self, nominal_us: int) -> bytes:
         self._steps += 1
-        self.counter = self._steps + sum(by for at, by in self._jumps if self._steps >= at)
+        self.counter = wrap_counter(self._start - 1 + self._steps + sum(by for at, by in self._jumps if self._steps >= at))
         if nominal_us <= 0:
             raise CarError(f"source {self.name}: nominal time {nominal_us} us is not positive")
         if self.desc.kind == IMAGE_KIND:
@@ -258,10 +268,11 @@ class CarScript:
     renumber: frozenset[str] = frozenset()
     counter_jump: Mapping[str, tuple[tuple[int, int], ...]] = field(default_factory=dict)
     edits: RecordingEdits = RecordingEdits()
+    counter_start: Mapping[str, int] = field(default_factory=dict)
 
 
 def parse_car_script(topology: Topology, scenario: Scenario) -> CarScript:
-    """Read ``scenario.car`` (verbs ``restart``, ``silent``, ``invalid``, ``renumber``, ``counter_jump``) and
+    """Read ``scenario.car`` (verbs ``restart``, ``silent``, ``invalid``, ``renumber``, ``counter_jump``, ``counter_start``) and
     ``scenario.recording`` (``drop_sample``, ``drop_ref_sync``, ``repeat_sample``); anything else is a ``CarError``."""
     where = f"scenario {scenario.name}"
     unknown = sorted(set(scenario.car) - set(CAR_VERBS))
@@ -309,11 +320,21 @@ def parse_car_script(topology: Topology, scenario: Scenario) -> CarScript:
             raise CarError(f"{where}: car.counter_jump names {e['source']!r}, which is not a source of {topology.name}")
         jumps.setdefault(e["source"], []).append((whole("counter_jump", "at_counter", e["at_counter"], 1),
                                                   whole("counter_jump", "by", e["by"], 1)))
+    starts: dict[str, int] = {}
+    for e in entries("counter_start", ("source", "first")):
+        if topology.source(e["source"]) is None:
+            raise CarError(f"{where}: car.counter_start names {e['source']!r}, which is not a source of {topology.name}")
+        if e["source"] in starts:
+            raise CarError(f"{where}: car.counter_start names source {e['source']!r} twice")
+        first = whole("counter_start", "first", e["first"], 1)
+        if first > MAX_COUNTER:
+            raise CarError(f"{where}: car.counter_start.first must be an integer from 1 to {MAX_COUNTER}, got {first!r}")
+        starts[e["source"]] = first
     return CarScript({c: frozenset(r) for c, r in restarts.items()},
                      {s: tuple(w) for s, w in windows["silent"].items()},
                      {s: tuple(w) for s, w in windows["invalid"].items()},
                      frozenset(renumber), {s: tuple(sorted(j)) for s, j in jumps.items()},
-                     parse_recording_edits(topology, scenario))
+                     parse_recording_edits(topology, scenario), starts)
 
 
 def parse_recording_edits(topology: Topology, scenario: Scenario) -> RecordingEdits:
@@ -486,7 +507,8 @@ class Car:
         until = topology.duration_ms * 1000
         sources = [SourceTask(s, topology.seed, self._image_factory if s.kind == IMAGE_KIND else self._sample_factory,
                               self.script.silent.get(s.name, ()), self.script.invalid.get(s.name, ()),
-                              self.script.counter_jump.get(s.name, ())) for s in topology.sources]
+                              self.script.counter_jump.get(s.name, ()),
+                              self.script.counter_start.get(s.name, 1)) for s in topology.sources]
         tasks = {c.name: Task(c.name, (c.period_ms or 0) * 1000, (c.phase_ms or 0) * 1000, c.jitter_ms * 1000, topology.seed)
                  for c in topology.components if c.period_ms is not None}
         events: list[tuple[int, int, int, int, str]] = []  # (time, class, declaration order, tick, task name)
@@ -512,7 +534,7 @@ class Car:
                 self._log(port, time_us, payload, source.counter)
                 self._fire_triggers([port], time_us)
             elif kind == ACTIVATION:
-                self._activate(name, time_us, k + 1, time_us, k)
+                self._activate(name, time_us, wrap_counter(k + 1), time_us, k)
             else:
                 control, logged_us = self._pending.pop((name, k))
                 self.startComponent(name, time_us, control, logged_us, dt_s=tasks[name].period_us / 1e6)

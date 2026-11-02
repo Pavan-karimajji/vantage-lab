@@ -61,6 +61,9 @@ scenarios:
   - name: counter_jump
     car: {counter_jump: [{source: X, at_counter: 50, by: 1000}]}
     resim: [{name: all_simulated}]
+  - name: counter_wrap
+    car: {counter_start: [{source: X, first: 4294967291}]}    # 0xFFFFFFFB: X's 5th sample is 0xFFFFFFFF, its 6th is 1
+    resim: [{name: all_simulated}]
   - name: renumber_lib
     expect: diverges
     resim:

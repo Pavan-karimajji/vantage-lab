@@ -32,7 +32,7 @@ def test_lab07_running_example_loads_clean():
     a = topology.component("A")
     assert (a.phase_ms, a.memory) == (20, False)  # phase defaults to the period
     assert [s.name for s in topology.scenarios] == ["base", "restart", "fault", "missing_sample", "missing_run",
-                                                    "no_ref_sync", "counter_jump", "renumber_lib"]
+                                                    "no_ref_sync", "counter_jump", "counter_wrap", "renumber_lib"]
     assert [case["name"] for case in topology.scenarios[0].resim] == ["cut_c", "all_simulated", "jump", "hang", "crash"]
 
 
