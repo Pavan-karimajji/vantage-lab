@@ -329,7 +329,9 @@ def test_lab52_the_running_example_has_the_drills_of_section_6_2(topology):
     assert [s.name for s in topology.scenarios] == ["base", "restart", "fault", "missing_sample", "missing_run",
                                                     "no_ref_sync", "counter_jump", "counter_wrap", "renumber_lib"]
     assert [c["name"] for c in scenario_of(topology, "base").resim] == ["cut_c", "all_simulated", "jump", "hang", "crash"]
-    assert {s.name: s.expect for s in topology.scenarios if s.expect != "exact"} == {"no_ref_sync": "diverges",
+    assert {s.name: s.expect for s in topology.scenarios if s.expect != "exact"} == {"missing_sample": "diverges",
+                                                                                      "missing_run": "diverges",
+                                                                                      "no_ref_sync": "diverges",
                                                                                       "renumber_lib": "diverges"}
     dropped = lambda name: sorted(c for _, c in parse_car_script(topology, scenario_of(topology, name)).edits.drop_samples)
     assert dropped("missing_sample") == [20, 21, 22] and dropped("missing_run") == list(range(30, 40))

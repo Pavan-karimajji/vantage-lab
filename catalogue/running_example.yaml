@@ -34,6 +34,7 @@ scenarios:
     resim: [{name: replay}]
   # Drills (G4; ARCH section 12), section 6.2.
   - name: missing_sample
+    expect: diverges
     recording:
       drop_sample:
         - {port: source.Y, counter: 20}
@@ -41,6 +42,7 @@ scenarios:
         - {port: source.Y, counter: 22}
     resim: [{name: all_simulated}]
   - name: missing_run
+    expect: diverges
     recording:
       drop_sample:
         - {port: source.Y, counter: 30}
